@@ -1,2 +1,0 @@
-timestamp,point_index,smu_voltage_V,Vdc_pv_V,Idc_adc1_raw,Idc_pv_A,Pdc_pv_W,is_mpp_candidate,is_negative_current_endpoint
-2026-05-22T12:43:16,1,9.5,0.672525372,-4.996,-4.996,-3.359936758512,False,True
