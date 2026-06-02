@@ -1,0 +1,3 @@
+Flask>=3.0
+pyvisa>=1.14
+matplotlib>=3.8

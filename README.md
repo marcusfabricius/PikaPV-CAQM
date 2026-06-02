@@ -1,8 +1,8 @@
 # MeasureApp
 
-MeasureApp is a Python/Tkinter measurement GUI for a solar-cell impedance and capacitance setup. It combines the earlier standalone IV/PV, CV, impedance frequency sweep, and A-B differential lock-in monitor scripts into one GUI-driven program.
+MeasureApp is a local measurement application for a solar-cell impedance and capacitance setup. The measurement backend still comes from the original Tkinter program, but the primary interface is now a clean local Flask web app that runs on the measurement computer and opens in a browser.
 
-The main application file is `gui-v1.py`.
+The web application entry point is `web_app.py`. The legacy Tkinter file `gui-v1.py` is kept as the measurement backend source of truth.
 
 ## What It Measures
 
@@ -41,22 +41,28 @@ Do not change these addresses unless the lab setup has changed.
 Install Python packages:
 
 ```powershell
-pip install pyvisa matplotlib
+python -m pip install -r requirements.txt
 ```
 
-Tkinter is also required. It is included with most standard Python installations on Windows.
+Tkinter is still imported by the legacy backend file. It is included with most standard Python installations on Windows.
 
 For real measurements, the measurement PC must also have a working VISA backend and the correct GPIB drivers installed. Use simulation mode if the instruments are not connected.
 
 ## Running
 
-From this directory:
+From this directory, run the local web app:
 
 ```powershell
-python gui-v1.py
+python web_app.py
 ```
 
-The GUI opens as `MeasureApp`.
+Open the browser at:
+
+```text
+http://127.0.0.1:5000
+```
+
+Detailed measurement logs, debug output, instrument messages, and tracebacks are printed in the terminal. The webpage only shows short status and error messages.
 
 Before using real hardware, check:
 
@@ -72,7 +78,12 @@ Before using real hardware, check:
 
 | File | Purpose |
 | --- | --- |
-| `gui-v1.py` | Main combined GUI application |
+| `web_app.py` | Flask web server, API endpoints, background measurement thread, CSV upload/download |
+| `templates/index.html` | Three-screen browser interface |
+| `static/app.css` | Modern local web UI styling |
+| `static/app.js` | Screen flow, modals, API polling, CSV upload, canvas plotting |
+| `requirements.txt` | Python dependencies for the local web app |
+| `gui-v1.py` | Legacy Tkinter application and reused measurement backend |
 | `main-iv-pv-curve.py` | Earlier standalone IV/PV sweep script |
 | `main-cv-pv-curve.py` | Earlier standalone CV sweep script |
 | `frequency-plots.py` | Earlier standalone impedance/frequency sweep script |
@@ -85,7 +96,7 @@ Before using real hardware, check:
 
 ## Architecture
 
-`gui-v1.py` is organized around four main classes:
+`gui-v1.py` is organized around four main backend classes that the web app reuses:
 
 ### `Settings`
 
@@ -136,6 +147,20 @@ Builds and runs the Tkinter GUI:
 - updates the log window
 - stores datasets from completed runs
 - plots built-in and custom plots with embedded Matplotlib
+
+### `web_app.py`
+
+Adds the local web layer:
+
+- `/` serves the browser UI
+- `/api/start` starts the selected measurement in a background thread
+- `/api/status` reports `idle`, `running`, `completed`, `failed`, or `stopped`
+- `/api/stop` requests a safe stop through the backend stop event
+- `/api/results` returns measured/uploaded data for plotting
+- `/api/upload` loads an existing CSV for plotting
+- `/download/combined` downloads the main combined CSV for the latest run
+
+The web layer does not implement new instrument physics. It calls `MeasurementEngine.run_selected()` and preserves the existing `VisaController` configuration and safety checks.
 
 Keep these responsibilities separate when changing the code. Measurement logic should stay in `MeasurementEngine`, instrument communication should stay in `VisaController`, and GUI callbacks should only collect settings, start or stop workers, display logs, and plot data.
 
@@ -291,9 +316,9 @@ A previous failure happened because `abs(Idc_pv)` was about `4.416 A` while an o
 
 `gui-v1.py` includes `FakeInstrument` and `FakeResourceManager`.
 
-Enable `Simulation mode` in the GUI to test:
+Enable `simulation mode` in Advanced settings to test:
 
-- GUI layout
+- web layout
 - logging
 - measurement flow
 - output CSV generation
@@ -314,9 +339,28 @@ Output filenames include timestamps, for example:
 ```text
 iv_pv_sweep_20260601_170702.csv
 frequency_impedance_sweep_20260601_170702.csv
+combined_standard_dc_20260602_114919.csv
 ```
 
-The GUI does not automatically save every plot as PNG during measurement. Use `Save current plot as PNG` to save the currently displayed Matplotlib figure.
+The web app saves one main combined CSV per completed run and keeps the detailed backend CSV files where the existing measurement engine creates them. Uploaded CSV files are parsed and made available on the plotting screen without starting a new measurement.
+
+## Web App Assumptions
+
+- The existing `gui-v1.py` backend remains the trusted source for instrument communication, measurement calculations, simulation, outlier handling, and safety checks.
+- Complete AC single-frequency mode is routed through the existing CV frequency-sweep engine using a very narrow frequency range, because the current capacitance filter expects at least two frequency candidates.
+- Browser plots are drawn with local JavaScript canvas code, so no external plotting CDN is required.
+- Full logs and tracebacks stay in the terminal by design.
+
+## Real Hardware Verification
+
+Before real measurements, verify on the measurement PC:
+
+- Flask app can see the same VISA backend and GPIB resources as the old Tkinter GUI.
+- DMM, SMU, function generator, and both lock-ins configure correctly from each selected measurement mode.
+- Stop/cancel leaves SMU and function generator outputs in the expected safe state.
+- Current sign and ADC1-to-ampere scaling are correct.
+- Function generator `VOLT` units match the intended AC perturbation.
+- Uploaded combined CSV files contain the columns needed for the plots you expect.
 
 ## Instrument Command Notes
 
