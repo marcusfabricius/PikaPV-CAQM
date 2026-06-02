@@ -1,0 +1,7 @@
+timestamp,sweep_index,smu_voltage_V,Vdc_pv_median_V,Vdc_pv_mean_V,Idc_pv_median_A,frequency_points_recorded,C_final_median_F,C_final_mean_F,C_final_std_F,filter_used_points,filter_candidate_points,filter_outlier_points,filter_frequency_min_Hz,filter_frequency_max_Hz
+2026-05-20T09:40:59,1,10.1,0.0224193129,0.021278623726666668,1.84,15,nan,nan,nan,0,0,0,nan,nan
+2026-05-20T09:41:16,2,10.2,0.123240635,0.1220229064,1.839,15,nan,nan,nan,0,0,0,nan,nan
+2026-05-20T09:41:34,3,10.3,0.22302508,0.22211895760000003,1.838,15,nan,nan,nan,0,0,0,nan,nan
+2026-05-20T09:41:51,4,10.4,0.320888904,0.3195210871333333,1.836,15,nan,nan,nan,0,0,0,nan,nan
+2026-05-20T09:42:09,5,10.5,0.414846607,0.4154548524,1.83,15,nan,nan,nan,0,0,0,nan,nan
+2026-05-20T09:42:27,6,10.6,0.481277323,0.4813438684,1.796,15,nan,nan,nan,0,0,0,nan,nan
