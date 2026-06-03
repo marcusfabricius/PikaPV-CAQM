@@ -18,6 +18,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: "Segoe UI", Arial, sans-serif;
+  padding-bottom: 78px;
 }
 
 .shell {
@@ -325,6 +326,59 @@ dialog form { padding: 20px; }
   width: 100%;
   height: min(30vh, 260px);
   min-height: 210px;
+}
+
+.run-progress {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, .96);
+  border-top: 1px solid var(--line);
+  padding: 10px max(18px, calc((100vw - 1180px) / 2 + 22px)) 14px;
+  box-shadow: 0 -8px 24px rgba(24, 32, 42, .08);
+}
+.run-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.run-progress-meta strong {
+  color: var(--ink);
+}
+.run-progress-track {
+  position: relative;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff4bf;
+  border: 1px solid #dfb90f;
+  overflow: visible;
+}
+.run-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ffe15a, #ffc400);
+  transition: width .35s ease;
+}
+.pikachu-runner {
+  position: absolute;
+  left: 0%;
+  top: -46px;
+  transform: translateX(-50%);
+  transition: left .35s ease;
+  pointer-events: none;
+}
+.pikachu-gif {
+  display: block;
+  width: 54px;
+  height: 44px;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 2px rgba(24, 32, 42, .18));
 }
 
 @media (max-width: 900px) {

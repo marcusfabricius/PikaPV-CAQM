@@ -67,6 +67,19 @@
     </section>
   </main>
 
+  <aside class="run-progress" id="runProgress" hidden>
+    <div class="run-progress-meta">
+      <strong id="runProgressTitle">Measurement progress</strong>
+      <span id="runProgressText">Estimating...</span>
+    </div>
+    <div class="run-progress-track" aria-hidden="true">
+      <div class="run-progress-fill" id="runProgressFill"></div>
+      <div class="pikachu-runner" id="pikachuRunner">
+        <img class="pikachu-gif" src="{{ url_for('static', filename='pikachu.gif') }}" alt="">
+      </div>
+    </div>
+  </aside>
+
   <dialog id="infoModal">
     <form method="dialog">
       <button class="icon close" aria-label="Close">x</button>

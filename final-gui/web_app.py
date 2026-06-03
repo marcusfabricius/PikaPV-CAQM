@@ -94,12 +94,32 @@ class RunState:
         self.live_rows: List[Dict[str, Any]] = []
         self.live_control: Dict[str, Any] = {}
         self.smu_calibration: Dict[str, Any] = {}
+        self.progress: Dict[str, Any] = {}
         self.stop_event = threading.Event()
         self.worker: Optional[threading.Thread] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
             variables = numeric_variables(self.datasets)
+            progress = dict(self.progress)
+            if self.status == "running" and progress:
+                started = safe_datetime_parse(str(progress.get("started_at") or self.started_at))
+                if started is not None:
+                    elapsed_s = max(0.0, (datetime.now() - started).total_seconds())
+                    progress["elapsed_s"] = elapsed_s
+                    base_percent = float(progress.get("base_percent", 0.0))
+                    end_percent = float(progress.get("end_percent", 100.0))
+                    if progress.get("estimated_total_s"):
+                        estimated_total_s = max(1.0, float(progress["estimated_total_s"]))
+                        span = max(0.0, end_percent - base_percent)
+                        progress["percent"] = min(end_percent - 0.2, base_percent + elapsed_s / estimated_total_s * span)
+                        progress["remaining_s"] = max(0.0, estimated_total_s - elapsed_s)
+                    elif progress.get("indeterminate"):
+                        span = max(0.0, end_percent - base_percent)
+                        progress["percent"] = min(end_percent, base_percent + span * (1.0 - math.exp(-elapsed_s / 8.0)))
+            elif self.status == "completed" and progress:
+                progress["percent"] = 100.0
+                progress["remaining_s"] = 0.0
             return {
                 "status": self.status,
                 "mode": self.mode,
@@ -114,6 +134,7 @@ class RunState:
                 "live_rows": self.live_rows[-300:],
                 "live_control": dict(self.live_control),
                 "smu_calibration": dict(self.smu_calibration),
+                "progress": progress,
             }
 
 
@@ -180,6 +201,13 @@ def safe_float(value: Any) -> Optional[float]:
     if not math.isfinite(f):
         return None
     return f
+
+
+def safe_datetime_parse(value: str) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
 
 
 def numeric_variables(datasets: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[str]]:
@@ -291,6 +319,104 @@ def settings_from_payload(payload: Dict[str, Any]) -> Any:
         if "cv_smu_step_v" in ac:
             settings.cv_smu_step_v = float(ac["cv_smu_step_v"])
     return settings
+
+
+def count_linear_points(start: float, stop: float, step: float) -> int:
+    if step <= 0 or stop < start:
+        return 1
+    return max(1, int(math.floor((stop - start) / step + 1e-12)) + 1)
+
+
+def count_freq_points(settings: Any, speed: str) -> int:
+    if math.isclose(settings.freq_start_hz, settings.freq_stop_hz, rel_tol=0.0, abs_tol=1e-12):
+        return 1
+    level = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
+    return len(backend.logspace_points(settings.freq_start_hz, settings.freq_stop_hz, level.points_per_decade))
+
+
+def estimate_voltage_points(settings: Any, speed: str, step_key: str) -> int:
+    cached = []
+    if getattr(settings, "auto_smu_range", False) and getattr(settings, "auto_smu_step_by_speed", False):
+        cache_key = (
+            speed,
+            round(float(settings.smu_start_v), 6),
+            round(float(settings.smu_stop_v), 6),
+            round(float(backend.AUTO_VDC_STEP_BY_SPEED.get(speed, backend.AUTO_VDC_STEP_BY_SPEED["Medium"])), 6),
+        )
+        cached = list(getattr(backend, "AUTO_SMU_SWEEP_CACHE", {}).get(cache_key, []))
+        if cached:
+            return max(1, len(cached))
+        target_step = float(backend.AUTO_VDC_STEP_BY_SPEED.get(speed, backend.AUTO_VDC_STEP_BY_SPEED["Medium"]))
+        usable_vdc_span = max(float(settings.target_vpv_v), float(settings.max_vdc_pv_v), target_step)
+        return max(2, int(math.ceil(usable_vdc_span / target_step)) + 1)
+    return count_linear_points(settings.smu_start_v, settings.smu_stop_v, float(getattr(settings, step_key)))
+
+
+def estimate_measurement_progress(payload: Dict[str, Any], settings: Any) -> Dict[str, Any]:
+    mode = payload.get("mode", "standard_dc")
+    speed = payload.get("speed", "Medium")
+    level = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
+    settling_smu = max(0.0, float(settings.settling_after_smu_s))
+    settling_freq = max(0.0, float(settings.settling_after_freq_s) * float(level.settling_multiplier))
+    lockin_wait = max(0.0, float(settings.lockin_time_constant_wait_s))
+    per_freq_s = settling_freq + lockin_wait + 0.15
+    n_freq = count_freq_points(settings, speed)
+    n_voltage = 1
+    total_s = 1.0
+
+    if mode == "standard_dc":
+        n_voltage = estimate_voltage_points(settings, speed, "smu_step_v")
+        total_s = n_voltage * settling_smu
+    elif mode == "frequency_sweep":
+        if settings.operating_point_mode == "MPP_SEARCH":
+            n_voltage = estimate_voltage_points(settings, speed, "smu_step_v")
+        else:
+            n_voltage = 1
+        total_s = n_voltage * settling_smu + n_freq * per_freq_s
+    elif mode == "complete_ac":
+        n_voltage = estimate_voltage_points(settings, speed, "cv_smu_step_v")
+        total_s = n_voltage * (settling_smu + n_freq * per_freq_s)
+    elif mode == "live_lockin":
+        return {
+            "mode": mode,
+            "label": "Live monitor",
+            "indeterminate": True,
+            "base_percent": 0.0,
+            "end_percent": 100.0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "message": "Live monitor running",
+        }
+    elif mode == "smu_calibration":
+        n_voltage = count_linear_points(settings.smu_start_v, settings.smu_stop_v, 0.005)
+        total_s = n_voltage * 0.15
+
+    return {
+        "mode": mode,
+        "label": mode.replace("_", " "),
+        "estimated_total_s": max(1.0, total_s),
+        "estimated_voltage_points": n_voltage,
+        "estimated_frequency_points": n_freq if mode in {"frequency_sweep", "complete_ac"} else 0,
+        "base_percent": float(payload.get("progress_base_percent", 0.0)),
+        "end_percent": float(payload.get("progress_end_percent", 100.0)),
+        "percent": 0.0,
+        "elapsed_s": 0.0,
+        "remaining_s": max(1.0, total_s),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def calibration_progress(base_percent: float, end_percent: float, label: str = "Calibrating solar cell") -> Dict[str, Any]:
+    return {
+        "mode": "smu_calibration",
+        "label": label,
+        "indeterminate": True,
+        "hide_time": True,
+        "base_percent": base_percent,
+        "end_percent": end_percent,
+        "percent": base_percent,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "message": "Calibrating solar cell before the timed estimate starts...",
+    }
 
 
 def serialize_summary(value: Any) -> Any:
@@ -440,12 +566,18 @@ def run_measurement(payload: Dict[str, Any]) -> None:
             terminal_log("Automatic SMU range is enabled and no calibration exists. Calibrating before measurement...")
             with STATE.lock:
                 STATE.mode = "smu_calibration"
+                STATE.progress = calibration_progress(0.0, 10.0)
             calibration_result = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event).run_smu_range_calibration()
             calibration = serialize_summary(calibration_result.summary)
             apply_calibration_to_settings(settings, calibration)
             with STATE.lock:
                 STATE.smu_calibration = calibration
                 STATE.output_files.extend(str(path) for path in calibration_result.output_files)
+                STATE.progress = estimate_measurement_progress({
+                    **payload,
+                    "progress_base_percent": 10.0,
+                    "progress_end_percent": 100.0,
+                }, settings)
             terminal_log("Automatic SMU range calibration complete. Continuing measurement.")
         elif settings.auto_smu_range and existing_calibration:
             apply_calibration_to_settings(settings, existing_calibration)
@@ -542,6 +674,10 @@ def start():
     with STATE.lock:
         if STATE.status == "running":
             return jsonify({"ok": False, "error": "A measurement is already running."}), 409
+        existing_calibration = dict(STATE.smu_calibration)
+        needs_calibration = bool(settings.auto_smu_range and not existing_calibration)
+        if settings.auto_smu_range and existing_calibration:
+            apply_calibration_to_settings(settings, existing_calibration)
         STATE.status = "running"
         STATE.mode = mode
         STATE.speed = speed
@@ -553,6 +689,7 @@ def start():
         STATE.output_files = []
         STATE.combined_csv = None
         STATE.live_rows = []
+        STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings)
         STATE.live_control = {
             "smu_voltage_v": settings.manual_smu_voltage_v,
             "fg_frequency_hz": settings.freq_start_hz,
@@ -566,6 +703,7 @@ def start():
 @app.post("/api/calibrate-smu")
 def calibrate_smu():
     payload = request.get_json(force=True)
+    settings = settings_from_payload(payload)
     with STATE.lock:
         if STATE.status == "running":
             return jsonify({"ok": False, "error": "A measurement is already running."}), 409
@@ -574,6 +712,7 @@ def calibrate_smu():
         STATE.short_error = ""
         STATE.started_at = datetime.now().isoformat(timespec="seconds")
         STATE.completed_at = ""
+        STATE.progress = calibration_progress(0.0, 100.0, "Calibrating solar cell")
         STATE.stop_event = threading.Event()
         STATE.worker = threading.Thread(target=run_calibration, args=(payload,), daemon=True)
         STATE.worker.start()

@@ -492,6 +492,7 @@ async function refreshStatus() {
   if (currentStatus.status === "failed") {
     $("statusText").textContent = currentStatus.short_error || "Measurement failed.";
   }
+  updateRunProgress();
   if ($("liveModal").open) drawLive();
   if (currentStatus.status === "completed" && $("waitingScreen").classList.contains("active")) {
     await loadResults();
@@ -782,6 +783,42 @@ function formatLiveValue(value, unit = "") {
     ? number.toExponential(3).replace("e-", "e^-").replace("e+", "e^")
     : Number(number.toPrecision(4)).toString();
   return unit ? `${text} ${unit}` : text;
+}
+
+function formatDuration(seconds) {
+  const number = Number(seconds);
+  if (!Number.isFinite(number) || number < 0) return "--";
+  const total = Math.round(number);
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const remMin = minutes % 60;
+    return `${hours}h ${String(remMin).padStart(2, "0")}m`;
+  }
+  return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+}
+
+function updateRunProgress() {
+  const progress = currentStatus.progress || {};
+  const isRunning = currentStatus.status === "running";
+  $("runProgress").hidden = !isRunning;
+  if (!isRunning) return;
+  const progressPercent = Number(progress.percent);
+  const percent = Number.isFinite(progressPercent)
+    ? Math.max(0, Math.min(100, progressPercent))
+    : Math.min(96, ((Date.now() / 1000) % 30) / 30 * 100);
+  $("runProgressFill").style.width = `${percent}%`;
+  $("pikachuRunner").style.left = `${percent}%`;
+  $("runProgressTitle").textContent = progress.label
+    ? `${progress.label} progress`
+    : "Measurement progress";
+  if (progress.hide_time || progress.indeterminate) {
+    $("runProgressText").textContent = progress.message || "Running...";
+  } else {
+    $("runProgressText").textContent =
+      `${percent.toFixed(0)}% | elapsed ${formatDuration(progress.elapsed_s)} | remaining ${formatDuration(progress.remaining_s)}`;
+  }
 }
 
 function sizeCanvasToDisplay(canvas) {
