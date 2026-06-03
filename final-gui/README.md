@@ -102,6 +102,8 @@ This is used for I-V/P-V voltage sweeps, MPP searches, and C-V voltage points. T
 
 After the first automatic sweep for a given speed and calibrated SMU range, the accepted SMU voltages are cached in memory and reused by later voltage-sweep measurements. Changing the speed or recalibrating the solar-cell range forces a fresh automatic step search.
 
+The bottom progress bar includes extra estimated time for this first uncached automatic SMU search, plus a small fixed overhead allowance for instrument commands, CSV writing, and UI/backend bookkeeping.
+
 During calibration, only Stop is shown. Resume is hidden because there is no useful plot-selection screen to resume into.
 
 If a first measurement is started while automatic range is enabled and no calibration exists yet, the app calibrates first and then continues with the selected measurement.

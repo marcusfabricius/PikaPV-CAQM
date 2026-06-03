@@ -816,8 +816,11 @@ function updateRunProgress() {
   if (progress.hide_time || progress.indeterminate) {
     $("runProgressText").textContent = progress.message || "Running...";
   } else {
+    const cacheNote = Number(progress.auto_smu_step_missing_points || 0) > 0
+      ? " | includes auto SMU search"
+      : "";
     $("runProgressText").textContent =
-      `${percent.toFixed(0)}% | elapsed ${formatDuration(progress.elapsed_s)} | remaining ${formatDuration(progress.remaining_s)}`;
+      `${percent.toFixed(0)}% | elapsed ${formatDuration(progress.elapsed_s)} | remaining ${formatDuration(progress.remaining_s)}${cacheNote}`;
   }
 }
 

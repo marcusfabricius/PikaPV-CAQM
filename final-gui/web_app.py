@@ -24,6 +24,10 @@ except Exception:  # pragma: no cover
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_SETTINGS_FILE = BASE_DIR / "default_settings.yaml"
 APP_STARTED_AT = datetime.now().isoformat(timespec="seconds")
+ESTIMATE_FIXED_OVERHEAD_S = 4.0
+ESTIMATE_PER_VOLTAGE_OVERHEAD_S = 0.10
+ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT = 4
+ESTIMATE_AUTO_SMU_SEARCH_READ_S = 0.15
 
 
 def load_measurement_backend():
@@ -334,7 +338,20 @@ def count_freq_points(settings: Any, speed: str) -> int:
     return len(backend.logspace_points(settings.freq_start_hz, settings.freq_stop_hz, level.points_per_decade))
 
 
-def estimate_voltage_points(settings: Any, speed: str, step_key: str) -> int:
+def calibration_vdc_span(calibration: Optional[Dict[str, Any]], fallback_span: float) -> float:
+    if not calibration:
+        return fallback_span
+    positive = calibration.get("positive_vdc_row", {})
+    negative = calibration.get("negative_idc_row", {})
+    start_vdc = safe_float(positive.get("Vdc_pv_V") if isinstance(positive, dict) else None)
+    stop_vdc = safe_float(negative.get("Vdc_pv_V") if isinstance(negative, dict) else None)
+    if start_vdc is None or stop_vdc is None:
+        return fallback_span
+    span = abs(stop_vdc - start_vdc)
+    return span if span > 0 else fallback_span
+
+
+def estimate_voltage_plan(settings: Any, speed: str, step_key: str, calibration: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cached = []
     if getattr(settings, "auto_smu_range", False) and getattr(settings, "auto_smu_step_by_speed", False):
         cache_key = (
@@ -344,15 +361,33 @@ def estimate_voltage_points(settings: Any, speed: str, step_key: str) -> int:
             round(float(backend.AUTO_VDC_STEP_BY_SPEED.get(speed, backend.AUTO_VDC_STEP_BY_SPEED["Medium"])), 6),
         )
         cached = list(getattr(backend, "AUTO_SMU_SWEEP_CACHE", {}).get(cache_key, []))
-        if cached:
-            return max(1, len(cached))
         target_step = float(backend.AUTO_VDC_STEP_BY_SPEED.get(speed, backend.AUTO_VDC_STEP_BY_SPEED["Medium"]))
-        usable_vdc_span = max(float(settings.target_vpv_v), float(settings.max_vdc_pv_v), target_step)
-        return max(2, int(math.ceil(usable_vdc_span / target_step)) + 1)
-    return count_linear_points(settings.smu_start_v, settings.smu_stop_v, float(getattr(settings, step_key)))
+        fallback_span = max(min(float(settings.target_vpv_v), float(settings.max_vdc_pv_v)), target_step)
+        usable_vdc_span = max(calibration_vdc_span(calibration, fallback_span), target_step)
+        estimated_points = max(2, int(math.ceil(usable_vdc_span / target_step)) + 1)
+        cached_points = len(cached)
+        missing_points = max(0, estimated_points - cached_points)
+        return {
+            "points": max(1, cached_points, estimated_points),
+            "auto_step": True,
+            "cached_points": cached_points,
+            "missing_points": missing_points,
+            "search_overhead_s": missing_points * ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT * ESTIMATE_AUTO_SMU_SEARCH_READ_S,
+        }
+    return {
+        "points": count_linear_points(settings.smu_start_v, settings.smu_stop_v, float(getattr(settings, step_key))),
+        "auto_step": False,
+        "cached_points": 0,
+        "missing_points": 0,
+        "search_overhead_s": 0.0,
+    }
 
 
-def estimate_measurement_progress(payload: Dict[str, Any], settings: Any) -> Dict[str, Any]:
+def estimate_voltage_points(settings: Any, speed: str, step_key: str, calibration: Optional[Dict[str, Any]] = None) -> int:
+    return int(estimate_voltage_plan(settings, speed, step_key, calibration)["points"])
+
+
+def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibration: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     mode = payload.get("mode", "standard_dc")
     speed = payload.get("speed", "Medium")
     level = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
@@ -363,19 +398,24 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any) -> Dic
     n_freq = count_freq_points(settings, speed)
     n_voltage = 1
     total_s = 1.0
+    voltage_plan = {"auto_step": False, "cached_points": 0, "missing_points": 0, "search_overhead_s": 0.0}
+    overhead_s = ESTIMATE_FIXED_OVERHEAD_S
 
     if mode == "standard_dc":
-        n_voltage = estimate_voltage_points(settings, speed, "smu_step_v")
-        total_s = n_voltage * settling_smu
+        voltage_plan = estimate_voltage_plan(settings, speed, "smu_step_v", calibration)
+        n_voltage = int(voltage_plan["points"])
+        total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S) + float(voltage_plan["search_overhead_s"]) + overhead_s
     elif mode == "frequency_sweep":
         if settings.operating_point_mode == "MPP_SEARCH":
-            n_voltage = estimate_voltage_points(settings, speed, "smu_step_v")
+            voltage_plan = estimate_voltage_plan(settings, speed, "smu_step_v", calibration)
+            n_voltage = int(voltage_plan["points"])
         else:
             n_voltage = 1
-        total_s = n_voltage * settling_smu + n_freq * per_freq_s
+        total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S) + float(voltage_plan["search_overhead_s"]) + n_freq * per_freq_s + overhead_s
     elif mode == "complete_ac":
-        n_voltage = estimate_voltage_points(settings, speed, "cv_smu_step_v")
-        total_s = n_voltage * (settling_smu + n_freq * per_freq_s)
+        voltage_plan = estimate_voltage_plan(settings, speed, "cv_smu_step_v", calibration)
+        n_voltage = int(voltage_plan["points"])
+        total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S + n_freq * per_freq_s) + float(voltage_plan["search_overhead_s"]) + overhead_s
     elif mode == "live_lockin":
         return {
             "mode": mode,
@@ -396,6 +436,10 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any) -> Dic
         "estimated_total_s": max(1.0, total_s),
         "estimated_voltage_points": n_voltage,
         "estimated_frequency_points": n_freq if mode in {"frequency_sweep", "complete_ac"} else 0,
+        "estimated_overhead_s": overhead_s,
+        "auto_smu_step_cached_points": int(voltage_plan.get("cached_points", 0)),
+        "auto_smu_step_missing_points": int(voltage_plan.get("missing_points", 0)),
+        "auto_smu_step_search_overhead_s": float(voltage_plan.get("search_overhead_s", 0.0)),
         "base_percent": float(payload.get("progress_base_percent", 0.0)),
         "end_percent": float(payload.get("progress_end_percent", 100.0)),
         "percent": 0.0,
@@ -577,7 +621,7 @@ def run_measurement(payload: Dict[str, Any]) -> None:
                     **payload,
                     "progress_base_percent": 10.0,
                     "progress_end_percent": 100.0,
-                }, settings)
+                }, settings, calibration)
             terminal_log("Automatic SMU range calibration complete. Continuing measurement.")
         elif settings.auto_smu_range and existing_calibration:
             apply_calibration_to_settings(settings, existing_calibration)
@@ -689,7 +733,7 @@ def start():
         STATE.output_files = []
         STATE.combined_csv = None
         STATE.live_rows = []
-        STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings)
+        STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings, existing_calibration)
         STATE.live_control = {
             "smu_voltage_v": settings.manual_smu_voltage_v,
             "fg_frequency_hz": settings.freq_start_hz,
