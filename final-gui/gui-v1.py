@@ -647,8 +647,9 @@ class VisaController:
             self.safe_write(self.fg, "OUTP ON", "Function generator")
             self.log("Function generator output left ON after run.")
         if self.smu is not None:
+            self.safe_write(self.smu, f"smua.source.levelv = {self.settings.smu_stop_v}", "SMU")
             self.safe_write(self.smu, "smua.source.output = smua.OUTPUT_ON", "SMU")
-            self.log("SMU output left ON after run.")
+            self.log(f"SMU output left ON at stop voltage: {self.settings.smu_stop_v:.6g} V")
 
 
 # ============================================================================
@@ -855,6 +856,8 @@ class MeasurementEngine:
 
             calibrated_start = round(check_start["smu_voltage_V"], 6)
             calibrated_stop = round(check_stop["smu_voltage_V"], 6)
+            self.settings.smu_start_v = calibrated_start
+            self.settings.smu_stop_v = calibrated_stop
             csv_path = output_dir / f"smu_range_calibration_{timestamp}.csv"
             save_rows(rows, csv_path)
             self.log(
@@ -1004,8 +1007,7 @@ class MeasurementEngine:
             mpp_row = max(candidates or rows, key=lambda r: r["Pdc_pv_W"])
             self.log("Maximum power point from IV sweep:")
             self.log(f"  Vmp={mpp_row['Vdc_pv_V']:.6e} V | Imp={mpp_row['Idc_pv_A']:.6e} A | Pmax={mpp_row['Pdc_pv_W']:.6e} W | SMU={mpp_row['smu_voltage_V']:.6g} V")
-            session.set_smu_voltage(mpp_row["smu_voltage_V"])
-            self.log(f"SMU set back to IV/PV MPP voltage and left ON: {mpp_row['smu_voltage_V']:.6g} V")
+            self.log(f"After the run, SMU will be left ON at stop voltage: {self.settings.smu_stop_v:.6g} V")
 
             csv_path = output_dir / f"iv_pv_sweep_{timestamp}.csv"
             save_rows(rows, csv_path)
@@ -1433,11 +1435,11 @@ class MeasurementEngine:
 
             if not impedance_rows:
                 raise RuntimeError("No valid impedance points were measured.")
-            session.set_smu_voltage(operating_smu)
             if self.settings.operating_point_mode == "MPP_SEARCH":
-                self.log(f"SMU set back to MPP operating voltage and left ON: {operating_smu:.6g} V")
+                self.log(f"MPP operating voltage was {operating_smu:.6g} V.")
             else:
-                self.log(f"SMU left ON at manual operating voltage: {operating_smu:.6g} V")
+                self.log(f"Manual operating voltage was {operating_smu:.6g} V.")
+            self.log(f"After the run, SMU will be left ON at stop voltage: {self.settings.smu_stop_v:.6g} V")
             dc_csv = output_dir / f"frequency_dc_operating_point_{timestamp}.csv"
             imp_csv = output_dir / f"frequency_impedance_sweep_{timestamp}.csv"
             rej_csv = output_dir / f"frequency_rejected_impedance_outliers_{timestamp}.csv"
@@ -1531,7 +1533,10 @@ class MeasurementEngine:
                 summary={},
             )
         finally:
-            session.close()
+            try:
+                session.shutdown_outputs()
+            finally:
+                session.close()
 
     def run_selected(self, selected: Dict[str, bool], speed_name: str) -> RunResult:
         datasets: Dict[str, List[Dict[str, Any]]] = {}

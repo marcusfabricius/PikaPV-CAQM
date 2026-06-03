@@ -111,7 +111,7 @@ Default result plots:
 
 The I-V and P-V plots are shown in the positive quadrant only: `0+ V` and `0+ A/W`.
 
-After the sweep, the backend finds the maximum power point from the measured DC data, sets the SMU back to the MPP voltage, and leaves the SMU output on.
+After the sweep, the backend finds the maximum power point from the measured DC data and saves it in the results. When the run exits, the SMU is left on at `smu_stop_v`.
 
 ### Standard Frequency Sweep
 
@@ -243,7 +243,9 @@ If another measurement is started while one is already running, the GUI shows an
 
 The function generator output is left on after runs.
 
-The SMU output is also left on after runs. For DC and frequency measurements, the SMU is set back to the MPP or selected operating voltage before the run ends.
+The SMU output is also left on after runs. When the backend knows the SMU stop voltage, it sets the SMU to `smu_stop_v` before going idle so the solar-cell current is at the lowest expected point.
+
+If Automatic SMU range calibration is enabled and has completed, `smu_stop_v` is the calibrated stop voltage. Otherwise it is the value from Advanced settings / `default_settings.yaml`.
 
 This behavior is intentional for the lab workflow. Check the instrument front panels before disconnecting or changing hardware.
 
@@ -287,4 +289,3 @@ Plots show no compatible data:
 The terminal is too noisy:
 
 - Normal `/api/status` polling logs are suppressed. Measurement progress logs are kept.
-
