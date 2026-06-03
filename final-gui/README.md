@@ -100,6 +100,8 @@ When active, the GUI greys out `smu_step_v` and `cv_smu_step_v`. Instead of step
 
 This is used for I-V/P-V voltage sweeps, MPP searches, and C-V voltage points. The search measurements between accepted points are used only to find the next SMU voltage; the saved curve points are the accepted roughly evenly spaced `Vdc_pv` points.
 
+After the first automatic sweep for a given speed and calibrated SMU range, the accepted SMU voltages are cached in memory and reused by later voltage-sweep measurements. Changing the speed or recalibrating the solar-cell range forces a fresh automatic step search.
+
 During calibration, only Stop is shown. Resume is hidden because there is no useful plot-selection screen to resume into.
 
 If a first measurement is started while automatic range is enabled and no calibration exists yet, the app calibrates first and then continues with the selected measurement.
