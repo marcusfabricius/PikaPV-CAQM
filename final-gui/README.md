@@ -62,9 +62,10 @@ The app expands these to `GPIB0::<number>::INSTR`.
 Important settings:
 
 - `auto_smu_range` - automatically calibrates SMU start/stop for the solar cell.
+- `auto_smu_step_by_speed` - automatically chooses SMU points from the measured `Vdc_pv` spacing when Automatic SMU range is enabled.
 - `smu_start_v`, `smu_stop_v` - manual search/sweep limits when automatic range is off, and the search envelope for calibration.
-- `smu_step_v` - DC and MPP search step size used during real measurements.
-- `cv_smu_step_v` - SMU voltage step size used for Complete AC / C-V measurements.
+- `smu_step_v` - DC and MPP search step size used when automatic step size is off.
+- `cv_smu_step_v` - SMU voltage step size used for Complete AC / C-V when automatic step size is off.
 - `freq_start_hz`, `freq_stop_hz` - default AC frequency range.
 - `vac_vpp`, `fg_offset_v`, `fg_waveform` - function generator settings.
 - `settling_after_smu_s`, `settling_after_freq_s`, `lockin_time_constant_wait_s` - timing settings.
@@ -85,7 +86,19 @@ The calibration:
 5. Verifies the detected start and stop points.
 6. Stores only the calibrated `smu_start_v` and `smu_stop_v`.
 
-The calibration precision is only for finding the range. Real measurements still use `smu_step_v` and `cv_smu_step_v` from Advanced settings.
+The calibration precision is only for finding the range. It does not overwrite `smu_step_v` or `cv_smu_step_v`.
+
+## Automatic SMU Step Size
+
+`auto_smu_step_by_speed` is enabled by default and only becomes active when `auto_smu_range` is also enabled.
+
+When active, the GUI greys out `smu_step_v` and `cv_smu_step_v`. Instead of stepping the SMU by a fixed voltage, the backend searches for the next SMU voltage that makes `Vdc_pv` increase by the target amount for the selected speed:
+
+- Fast: `0.05 Vdc_pv`
+- Medium: `0.025 Vdc_pv`
+- Slow: `0.01 Vdc_pv`
+
+This is used for I-V/P-V voltage sweeps, MPP searches, and C-V voltage points. The search measurements between accepted points are used only to find the next SMU voltage; the saved curve points are the accepted roughly evenly spaced `Vdc_pv` points.
 
 During calibration, only Stop is shown. Resume is hidden because there is no useful plot-selection screen to resume into.
 
@@ -95,7 +108,7 @@ If a first measurement is started while automatic range is enabled and no calibr
 
 ### Standard DC Measurement
 
-Runs a DC sweep from `smu_start_v` to `smu_stop_v` using `smu_step_v`.
+Runs a DC sweep from `smu_start_v` to `smu_stop_v`. With automatic SMU step size on, points are spaced by `Vdc_pv`; otherwise the sweep uses `smu_step_v`.
 
 Recorded variables:
 
@@ -119,7 +132,7 @@ Measures impedance over a log-spaced frequency range.
 
 Operating point options:
 
-- MPP search - first does a DC sweep using `smu_step_v`, selects the maximum power point, then runs the frequency sweep there.
+- MPP search - first does a DC sweep, selects the maximum power point, then runs the frequency sweep there. With automatic SMU step size on, the MPP sweep is spaced by `Vdc_pv`; otherwise it uses `smu_step_v`.
 - Manual SMU voltage - uses `manual_smu_voltage_v` directly.
 
 Recorded variables:
@@ -155,7 +168,7 @@ The terminal also prints capacitance for each frequency point.
 
 Runs a C-V style measurement. For each SMU voltage point, it measures one or more AC frequencies and calculates impedance/capacitance.
 
-Voltage points use `cv_smu_step_v`.
+With automatic SMU step size on, voltage points are spaced by `Vdc_pv`. Otherwise voltage points use `cv_smu_step_v`.
 
 Frequency mode options:
 

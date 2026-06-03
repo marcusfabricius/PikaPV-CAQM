@@ -131,6 +131,7 @@
   <script>
     window.DEFAULT_SETTINGS = {{ default_settings | tojson }};
     window.DEFAULT_PLOTS = {{ default_plots | tojson }};
+    window.APP_STARTED_AT = {{ app_started_at | tojson }};
   </script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_SETTINGS_FILE = BASE_DIR / "default_settings.yaml"
+APP_STARTED_AT = datetime.now().isoformat(timespec="seconds")
 
 
 def load_measurement_backend():
@@ -519,7 +520,12 @@ def run_calibration(payload: Dict[str, Any]) -> None:
 
 @app.get("/")
 def index():
-    return render_template("index.html", default_settings=default_settings_dict(), default_plots=DEFAULT_PLOTS)
+    return render_template(
+        "index.html",
+        default_settings=default_settings_dict(),
+        default_plots=DEFAULT_PLOTS,
+        app_started_at=APP_STARTED_AT,
+    )
 
 
 @app.get("/api/defaults")

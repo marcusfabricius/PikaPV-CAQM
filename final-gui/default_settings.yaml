@@ -4,6 +4,7 @@
 advanced_settings:
   # Web-only default
   test_speed: Medium
+  auto_smu_step_by_speed: true
 
   # VISA addresses
   dmm_addr: 10

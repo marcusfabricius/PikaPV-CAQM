@@ -248,6 +248,12 @@ SPEED_LEVELS: Dict[str, SpeedLevel] = {
     "Slow": SpeedLevel("Slow", points_per_decade=8, repeats=4, settling_multiplier=1.4),
 }
 
+AUTO_VDC_STEP_BY_SPEED: Dict[str, float] = {
+    "Fast": 0.05,
+    "Medium": 0.025,
+    "Slow": 0.01,
+}
+
 
 @dataclass
 class Settings:
@@ -264,6 +270,7 @@ class Settings:
 
     # SMU and DC sweep
     auto_smu_range: bool = True
+    auto_smu_step_by_speed: bool = True
     smu_start_v: float = 11.0
     smu_stop_v: float = 15.0
     smu_step_v: float = 0.05
@@ -694,6 +701,138 @@ class MeasurementEngine:
             raise ValueError("Maximum outlier retries must be zero or positive.")
         capacitance_scale_factor(self.settings.capacitance_unit)
 
+    def auto_smu_step_enabled(self) -> bool:
+        return bool(self.settings.auto_smu_range and self.settings.auto_smu_step_by_speed)
+
+    def target_vdc_step_for_speed(self, speed_name: str) -> float:
+        return AUTO_VDC_STEP_BY_SPEED.get(speed_name, AUTO_VDC_STEP_BY_SPEED["Medium"])
+
+    def find_next_vdc_step(
+        self,
+        session: VisaController,
+        low_row: Dict[str, Any],
+        stop_v: float,
+        target_vdc: float,
+        label: str,
+    ) -> Dict[str, Any]:
+        low_v = float(low_row["smu_voltage_V"])
+        if low_v >= stop_v - 1e-12:
+            return low_row
+
+        span = max(stop_v - self.settings.smu_start_v, 0.005)
+        bracket_step = max(0.005, min(max(self.settings.smu_step_v, self.settings.cv_smu_step_v), span / 8.0))
+        previous = low_row
+        high: Optional[Dict[str, Any]] = None
+        smu_v = low_v
+
+        while smu_v < stop_v - 1e-12:
+            self.check_stop()
+            smu_v = min(stop_v, smu_v + bracket_step)
+            vdc, idc, idc_raw = session.set_smu_voltage_and_read_dc(smu_v, wait_s=0.15)
+            row = {
+                "smu_voltage_V": smu_v,
+                "Vdc_pv_V": vdc,
+                "Idc_adc1_raw": idc_raw,
+                "Idc_pv_A": idc,
+                "Pdc_pv_W": vdc * idc,
+            }
+            if vdc >= target_vdc or smu_v >= stop_v - 1e-12 or (
+                self.settings.stop_if_idc_negative and idc < self.settings.negative_idc_limit_a
+            ):
+                high = row
+                break
+            previous = row
+
+        if high is None:
+            return previous
+        if high["smu_voltage_V"] >= stop_v - 1e-12 and high["Vdc_pv_V"] < target_vdc:
+            return high
+        if self.settings.stop_if_idc_negative and high["Idc_pv_A"] < self.settings.negative_idc_limit_a:
+            return high
+
+        low = previous
+        best = high
+        for _ in range(10):
+            self.check_stop()
+            low_smu = float(low["smu_voltage_V"])
+            high_smu = float(high["smu_voltage_V"])
+            if high_smu - low_smu <= 0.0025:
+                break
+            mid_smu = round((low_smu + high_smu) / 2.0, 6)
+            vdc, idc, idc_raw = session.set_smu_voltage_and_read_dc(mid_smu, wait_s=0.15)
+            mid = {
+                "smu_voltage_V": mid_smu,
+                "Vdc_pv_V": vdc,
+                "Idc_adc1_raw": idc_raw,
+                "Idc_pv_A": idc,
+                "Pdc_pv_W": vdc * idc,
+            }
+            if abs(vdc - target_vdc) < abs(best["Vdc_pv_V"] - target_vdc):
+                best = mid
+            if vdc >= target_vdc:
+                high = mid
+            else:
+                low = mid
+
+        self.log(
+            f"Auto SMU step {label} | target Vdc={target_vdc:.6e} V | "
+            f"SMU={best['smu_voltage_V']:.6g} V | Vdc={best['Vdc_pv_V']:.6e} V"
+        )
+        return best
+
+    def adaptive_dc_sweep_rows(
+        self,
+        session: VisaController,
+        speed_name: str,
+        start_v: float,
+        stop_v: float,
+        label: str,
+        stop_at_target_vpv: bool = True,
+    ) -> List[Dict[str, Any]]:
+        target_step = self.target_vdc_step_for_speed(speed_name)
+        self.log(
+            f"Automatic SMU step size is ON. Target spacing for {speed_name}: "
+            f"{target_step:.6g} Vdc_pv."
+        )
+        rows: List[Dict[str, Any]] = []
+        point_index = 1
+        vdc, idc, idc_raw = session.set_smu_voltage_and_read_dc(start_v)
+        current = {
+            "smu_voltage_V": start_v,
+            "Vdc_pv_V": vdc,
+            "Idc_adc1_raw": idc_raw,
+            "Idc_pv_A": idc,
+            "Pdc_pv_W": vdc * idc,
+        }
+        rows.append(current)
+        self.log(
+            f"{label} auto {point_index:>3} | SMU={start_v:.6g} V | "
+            f"Vdc={vdc:.6e} V | Idc={idc:.6e} A | P={vdc * idc:.6e} W"
+        )
+
+        while current["smu_voltage_V"] < stop_v - 1e-12:
+            if stop_at_target_vpv and current["Vdc_pv_V"] >= self.settings.target_vpv_v:
+                self.log(f"{label} auto sweep stopped because target Vpv was reached.")
+                break
+            if self.settings.stop_if_idc_negative and current["Idc_pv_A"] < self.settings.negative_idc_limit_a:
+                self.log(f"{label} auto sweep stopped because Idc became negative.")
+                break
+            target_vdc = current["Vdc_pv_V"] + target_step
+            next_row = self.find_next_vdc_step(session, current, stop_v, target_vdc, label)
+            if next_row["smu_voltage_V"] <= current["smu_voltage_V"] + 1e-12:
+                break
+            current = next_row
+            point_index += 1
+            rows.append(current)
+            self.log(
+                f"{label} auto {point_index:>3} | SMU={current['smu_voltage_V']:.6g} V | "
+                f"Vdc={current['Vdc_pv_V']:.6e} V | Idc={current['Idc_pv_A']:.6e} A | "
+                f"P={current['Pdc_pv_W']:.6e} W"
+            )
+            if point_index > 2000:
+                raise StopMeasurement("Automatic SMU step sweep exceeded 2000 points.")
+        return rows
+
     def estimate_cv_duration(self, pre_summary: Optional[PreScanSummary] = None) -> Dict[str, str]:
         if pre_summary is None:
             n_voltage = max(1, len(linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.cv_smu_step_v)))
@@ -964,7 +1103,7 @@ class MeasurementEngine:
             finally:
                 session.close()
 
-    def run_iv_pv(self) -> RunResult:
+    def run_iv_pv(self, speed_name: str = "Medium") -> RunResult:
         self.validate()
         output_dir = self.settings.output_dir
         ensure_dir(output_dir)
@@ -977,29 +1116,47 @@ class MeasurementEngine:
             session.configure_fg(self.settings.freq_start_hz)
             session.configure_smu(self.settings.smu_start_v)
 
-            smu_points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.smu_step_v)
             self.log("Starting IV/PV voltage sweep...")
-            for idx, smu_v in enumerate(smu_points, start=1):
-                self.check_stop()
-                vdc, idc, idc_raw = session.set_smu_voltage_and_read_dc(smu_v)
-                power = vdc * idc
-                rows.append({
-                    "timestamp": iso_now(),
-                    "point_index": idx,
-                    "smu_voltage_V": smu_v,
-                    "Vdc_pv_V": vdc,
-                    "Idc_adc1_raw": idc_raw,
-                    "Idc_pv_A": idc,
-                    "Pdc_pv_W": power,
-                })
-                self.log(f"IV {idx:>3}/{len(smu_points)} | SMU={smu_v:.4f} V | Vdc={vdc:.5e} V | Idc={idc:.5e} A | P={power:.5e} W")
+            if self.auto_smu_step_enabled():
+                measured_rows = self.adaptive_dc_sweep_rows(
+                    session,
+                    speed_name,
+                    self.settings.smu_start_v,
+                    self.settings.smu_stop_v,
+                    "IV",
+                )
+                for idx, measured in enumerate(measured_rows, start=1):
+                    rows.append({
+                        "timestamp": iso_now(),
+                        "point_index": idx,
+                        **measured,
+                        "auto_smu_step_by_speed": True,
+                        "target_vdc_step_V": self.target_vdc_step_for_speed(speed_name),
+                    })
+            else:
+                smu_points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.smu_step_v)
+                for idx, smu_v in enumerate(smu_points, start=1):
+                    self.check_stop()
+                    vdc, idc, idc_raw = session.set_smu_voltage_and_read_dc(smu_v)
+                    power = vdc * idc
+                    rows.append({
+                        "timestamp": iso_now(),
+                        "point_index": idx,
+                        "smu_voltage_V": smu_v,
+                        "Vdc_pv_V": vdc,
+                        "Idc_adc1_raw": idc_raw,
+                        "Idc_pv_A": idc,
+                        "Pdc_pv_W": power,
+                        "auto_smu_step_by_speed": False,
+                    })
+                    self.log(f"IV {idx:>3}/{len(smu_points)} | SMU={smu_v:.4f} V | Vdc={vdc:.5e} V | Idc={idc:.5e} A | P={power:.5e} W")
 
-                if vdc >= self.settings.target_vpv_v:
-                    self.log("IV sweep stopped because target Vpv was reached.")
-                    break
-                if self.settings.stop_if_idc_negative and idc < self.settings.negative_idc_limit_a:
-                    self.log("IV sweep stopped because Idc became negative.")
-                    break
+                    if vdc >= self.settings.target_vpv_v:
+                        self.log("IV sweep stopped because target Vpv was reached.")
+                        break
+                    if self.settings.stop_if_idc_negative and idc < self.settings.negative_idc_limit_a:
+                        self.log("IV sweep stopped because Idc became negative.")
+                        break
 
             if not rows:
                 raise RuntimeError("No IV/PV points were recorded.")
@@ -1215,12 +1372,26 @@ class MeasurementEngine:
                         first_smu = smu_v
                         break
 
-            smu_points = linear_points(first_smu, min(stop_smu, self.settings.smu_stop_v), self.settings.cv_smu_step_v)
+            if self.auto_smu_step_enabled():
+                measured_voltage_points = self.adaptive_dc_sweep_rows(
+                    session,
+                    speed_name,
+                    first_smu,
+                    min(stop_smu, self.settings.smu_stop_v),
+                    "CV",
+                    stop_at_target_vpv=False,
+                )
+                smu_points = [row["smu_voltage_V"] for row in measured_voltage_points]
+                target_vdc_step = self.target_vdc_step_for_speed(speed_name)
+            else:
+                measured_voltage_points = []
+                smu_points = linear_points(first_smu, min(stop_smu, self.settings.smu_stop_v), self.settings.cv_smu_step_v)
+                target_vdc_step = None
             self.log(f"Starting CV sweep with {len(smu_points)} voltage points, {len(freqs)} frequencies, {cv_repeats} pass per frequency.")
 
             for sweep_index, smu_v in enumerate(smu_points, start=1):
                 self.check_stop()
-                vdc0, idc0, _ = session.set_smu_voltage_and_read_dc(smu_v)
+                vdc0, idc0, idc0_raw = session.set_smu_voltage_and_read_dc(smu_v)
                 if self.settings.stop_if_idc_negative and idc0 < self.settings.negative_idc_limit_a:
                     self.log("CV sweep stopped because Idc became negative at voltage point.")
                     break
@@ -1241,6 +1412,9 @@ class MeasurementEngine:
                             "repeat_index": repeat_index,
                             "Vdc_pv_start_V": vdc0,
                             "Idc_pv_start_A": idc0,
+                            "Idc_adc1_start_raw": idc0_raw,
+                            "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
+                            "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                         }
                         row = self.measure_impedance_point(
                             session,
@@ -1266,10 +1440,13 @@ class MeasurementEngine:
                     "Vdc_pv_median_V": statistics.median(vdc_values) if vdc_values else vdc0,
                     "Vdc_pv_mean_V": sum(vdc_values) / len(vdc_values) if vdc_values else vdc0,
                     "Idc_pv_median_A": statistics.median(idc_values) if idc_values else idc0,
+                    "Pdc_pv_W": (statistics.median(vdc_values) if vdc_values else vdc0) * (statistics.median(idc_values) if idc_values else idc0),
                     "frequency_points_recorded": len(rows_for_voltage),
                     "cv_speed_level": speed_name,
                     "points_per_decade": level.points_per_decade,
                     "repeats_per_frequency": cv_repeats,
+                    "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
+                    "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                 }
                 if filt:
                     cv_row.update({
@@ -1398,8 +1575,43 @@ class MeasurementEngine:
             time.sleep(settling_s)
 
             if self.settings.operating_point_mode == "MPP_SEARCH":
-                smu_points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.smu_step_v)
-                operating_row, _ = self.dc_voltage_sweep_find_mpp(session, smu_points, dc_rows)
+                if self.auto_smu_step_enabled():
+                    measured_rows = self.adaptive_dc_sweep_rows(
+                        session,
+                        speed_name,
+                        self.settings.smu_start_v,
+                        self.settings.smu_stop_v,
+                        "MPP",
+                        stop_at_target_vpv=False,
+                    )
+                    for idx, measured in enumerate(measured_rows, start=1):
+                        is_negative = measured["Idc_pv_A"] < self.settings.negative_idc_limit_a
+                        is_candidate = (
+                            measured["Vdc_pv_V"] >= self.settings.min_mpp_vdc_pv_v
+                            and measured["Idc_pv_A"] >= self.settings.min_mpp_idc_pv_a
+                            and not is_negative
+                        )
+                        dc_rows.append({
+                            "timestamp": iso_now(),
+                            "point_index": idx,
+                            **measured,
+                            "is_mpp_candidate": is_candidate,
+                            "is_negative_current_endpoint": is_negative,
+                            "auto_smu_step_by_speed": True,
+                            "target_vdc_step_V": self.target_vdc_step_for_speed(speed_name),
+                        })
+                    candidates = [row for row in dc_rows if row["is_mpp_candidate"]]
+                    if not candidates:
+                        raise RuntimeError("No usable MPP candidate was measured. Check current sign and sweep range.")
+                    operating_row = max(candidates, key=lambda row: row["Pdc_pv_W"])
+                    self.log(
+                        f"Selected MPP | SMU={operating_row['smu_voltage_V']:.6g} V | "
+                        f"Vdc={operating_row['Vdc_pv_V']:.6e} V | "
+                        f"Idc={operating_row['Idc_pv_A']:.6e} A | P={operating_row['Pdc_pv_W']:.6e} W"
+                    )
+                else:
+                    smu_points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.smu_step_v)
+                    operating_row, _ = self.dc_voltage_sweep_find_mpp(session, smu_points, dc_rows)
             else:
                 operating_row = self.establish_manual_point(session, dc_rows)
 
@@ -1551,7 +1763,7 @@ class MeasurementEngine:
             return RunResult(datasets, files, summary)
 
         if selected.get("iv_plot") or selected.get("pv_plot"):
-            result = self.run_iv_pv()
+            result = self.run_iv_pv(speed_name)
             datasets.update(result.datasets)
             files.extend(result.output_files)
             summary.update(result.summary)

@@ -35,7 +35,26 @@ let plotConfigs = [];
 let pollTimer = null;
 let pendingStartPayload = null;
 
-const settings = structuredClone(window.DEFAULT_SETTINGS);
+const advancedStorageKey = `measureapp-advanced-settings:${window.APP_STARTED_AT || "current"}`;
+
+function loadPersistedAdvancedSettings() {
+  try {
+    const raw = localStorage.getItem(advancedStorageKey);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistAdvancedSettings() {
+  try {
+    localStorage.setItem(advancedStorageKey, JSON.stringify(settings));
+  } catch {
+    // Local storage can be disabled; the GUI should still run normally.
+  }
+}
+
+const settings = { ...structuredClone(window.DEFAULT_SETTINGS), ...loadPersistedAdvancedSettings() };
 settings.test_speed = settings.test_speed || "Medium";
 
 const variableOptionsByMode = {
@@ -218,7 +237,7 @@ function openInfo(key) {
 
 function buildAdvanced() {
   const sections = [
-    ["Measurement speed mode", ["test_speed"]],
+    ["Measurement speed mode", ["test_speed", "auto_smu_step_by_speed"]],
     ["Settling times", ["settling_after_smu_s", "settling_after_freq_s", "lockin_time_constant_wait_s", "ab_sample_interval_s"]],
     ["SMU settings", ["auto_smu_range", "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "manual_smu_voltage_v", "target_vpv_v", "operating_point_mode"]],
     ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
@@ -237,6 +256,17 @@ function buildAdvanced() {
   updateAutoSmuRangeFields();
   const autoInput = document.querySelector('[data-advanced="auto_smu_range"]');
   if (autoInput) autoInput.addEventListener("change", updateAutoSmuRangeFields);
+  const autoStepInput = document.querySelector('[data-advanced="auto_smu_step_by_speed"]');
+  if (autoStepInput) autoStepInput.addEventListener("change", updateAutoSmuRangeFields);
+  document.querySelectorAll("[data-advanced]").forEach(input => {
+    input.addEventListener("change", () => {
+      collectAdvanced();
+      updateAutoSmuRangeFields();
+    });
+    input.addEventListener("input", () => {
+      collectAdvanced();
+    });
+  });
 }
 
 function renderAdvancedField(key) {
@@ -269,6 +299,7 @@ function collectAdvanced() {
       settings[key] = input.type === "checkbox" ? input.checked : input.value;
     }
   });
+  persistAdvancedSettings();
 }
 
 function isAutoSmuRangeEnabled() {
@@ -282,11 +313,23 @@ function updateCalibrateButtonVisibility() {
 
 function updateAutoSmuRangeFields() {
   const isAuto = isAutoSmuRangeEnabled();
+  const autoStepInput = document.querySelector('[data-advanced="auto_smu_step_by_speed"]');
+  if (autoStepInput) {
+    autoStepInput.disabled = !isAuto;
+    autoStepInput.closest("label")?.classList.toggle("disabled-field", !isAuto);
+  }
+  const isAutoStep = isAuto && Boolean(autoStepInput?.checked);
   ["smu_start_v", "smu_stop_v"].forEach(key => {
     const input = document.querySelector(`[data-advanced="${key}"]`);
     if (!input) return;
     input.disabled = isAuto;
     input.closest("label")?.classList.toggle("disabled-field", isAuto);
+  });
+  ["smu_step_v", "cv_smu_step_v"].forEach(key => {
+    const input = document.querySelector(`[data-advanced="${key}"]`);
+    if (!input) return;
+    input.disabled = isAutoStep;
+    input.closest("label")?.classList.toggle("disabled-field", isAutoStep);
   });
   updateCalibrateButtonVisibility();
 }
