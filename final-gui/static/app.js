@@ -271,15 +271,24 @@ function collectAdvanced() {
   });
 }
 
-function updateAutoSmuRangeFields() {
+function isAutoSmuRangeEnabled() {
   const autoInput = document.querySelector('[data-advanced="auto_smu_range"]');
-  const isAuto = autoInput ? autoInput.checked : Boolean(settings.auto_smu_range);
+  return autoInput ? autoInput.checked : Boolean(settings.auto_smu_range);
+}
+
+function updateCalibrateButtonVisibility() {
+  $("calibrateSmuButton").hidden = currentStatus.status === "running" || !isAutoSmuRangeEnabled();
+}
+
+function updateAutoSmuRangeFields() {
+  const isAuto = isAutoSmuRangeEnabled();
   ["smu_start_v", "smu_stop_v"].forEach(key => {
     const input = document.querySelector(`[data-advanced="${key}"]`);
     if (!input) return;
     input.disabled = isAuto;
     input.closest("label")?.classList.toggle("disabled-field", isAuto);
   });
+  updateCalibrateButtonVisibility();
 }
 
 function isGpibAddressKey(key) {
@@ -429,7 +438,7 @@ async function refreshStatus() {
   $("resumeButton").hidden = currentStatus.status !== "running" || currentStatus.mode === "smu_calibration";
   $("resumeRunningButton").hidden = currentStatus.mode === "smu_calibration";
   $("stopButton").hidden = currentStatus.status !== "running";
-  $("calibrateSmuButton").hidden = currentStatus.status === "running";
+  updateCalibrateButtonVisibility();
   $("calibrateSmuButton").textContent = currentStatus.smu_calibration?.smu_start_v
     ? "Recalibrate for solar cell"
     : "Calibrate for solar cell";
