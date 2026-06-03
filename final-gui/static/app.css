@@ -11,6 +11,8 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -29,6 +31,11 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.top-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 h1, h2, h3, p { margin-top: 0; }
@@ -107,6 +114,7 @@ button, .button {
 .primary { background: var(--blue); color: #fff; }
 .secondary, .ghost { background: #fff; border: 1px solid var(--line); color: var(--ink); }
 .danger { color: var(--red); }
+.danger-fill { background: var(--red); color: #fff; }
 select, input {
   border: 1px solid var(--line);
   background: #fff;
@@ -128,6 +136,9 @@ select, input {
   gap: 12px;
 }
 .conditional.visible { display: grid; }
+.conditional .inline-fields {
+  display: contents;
+}
 
 .plot-configs {
   display: grid;
@@ -188,6 +199,14 @@ dialog {
   max-width: 880px;
   width: calc(100% - 32px);
 }
+#liveModal {
+  max-width: min(960px, calc(100vw - 32px));
+  overflow: hidden;
+}
+#liveModal form {
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+}
 dialog::backdrop { background: rgba(24, 32, 42, .35); }
 dialog form { padding: 20px; }
 .advanced-grid {
@@ -207,9 +226,28 @@ dialog form { padding: 20px; }
   justify-content: flex-end;
   margin-top: 16px;
 }
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+.live-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.live-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+}
 .live-values {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -217,10 +255,47 @@ dialog form { padding: 20px; }
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
+  min-width: 0;
+}
+.live-values strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-values span {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.live-loading {
+  display: grid;
+  place-items: center;
+  min-height: 300px;
+  color: var(--muted);
+  text-align: center;
+}
+.live-loading .spinner {
+  margin-bottom: 12px;
+}
+.live-charts {
+  display: grid;
+  gap: 10px;
+}
+.live-charts canvas {
+  display: block;
+  width: 100%;
+  height: min(30vh, 260px);
+  min-height: 210px;
 }
 
 @media (max-width: 900px) {
   .mode-grid, .plots, .plot-configs { grid-template-columns: 1fr; }
   .conditional, .advanced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-controls { grid-template-columns: 1fr; }
+  .live-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar, .actions, .result-actions { align-items: stretch; flex-direction: column; }
 }

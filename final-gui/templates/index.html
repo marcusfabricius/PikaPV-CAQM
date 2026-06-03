@@ -13,7 +13,10 @@
         <h1>MeasureApp</h1>
         <p id="statusText">Local measurement web interface</p>
       </div>
-      <button class="ghost danger" id="stopButton" type="button">Stop</button>
+      <div class="top-actions">
+        <button class="ghost" id="resumeButton" type="button" hidden>Resume</button>
+        <button class="ghost danger" id="stopButton" type="button" hidden>Stop</button>
+      </div>
     </header>
 
     <nav class="progress" aria-label="Progress">
@@ -91,11 +94,36 @@
   </dialog>
 
   <dialog id="liveModal">
+    <form id="liveForm">
+      <button class="icon close" id="liveCloseButton" type="button" aria-label="Close">x</button>
+      <h2>Live lock-in data</h2>
+      <div class="live-controls">
+        <label>SMU voltage [V]<input id="liveSmuVoltage" type="number" step="0.001"></label>
+        <label>FG frequency [Hz]<input id="liveFgFrequency" type="number" step="0.1"></label>
+        <button class="secondary" id="applyLiveControl" type="button">Apply</button>
+      </div>
+      <div class="live-values" id="liveValues"></div>
+      <div class="live-loading" id="liveLoading">
+        <div class="spinner"></div>
+        <p>Waiting for first lock-in sample...</p>
+      </div>
+      <div class="live-charts" id="liveCharts" hidden>
+        <canvas id="liveValueCanvas"></canvas>
+        <canvas id="livePhaseCanvas"></canvas>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="runningModal">
     <form method="dialog">
       <button class="icon close" aria-label="Close">x</button>
-      <h2>Live lock-in data</h2>
-      <div class="live-values" id="liveValues"></div>
-      <canvas id="liveCanvas" width="960" height="420"></canvas>
+      <h2>Measurement already running</h2>
+      <p>A measurement is already active. You can resume it, let it continue in the background, or safely stop it and start the new one.</p>
+      <div class="modal-actions">
+        <button class="secondary" id="resumeRunningButton" type="button">Resume current</button>
+        <button class="secondary" value="continue">Keep running</button>
+        <button class="primary danger-fill" id="replaceRunningButton" type="button">Stop and start new</button>
+      </div>
     </form>
   </dialog>
 

@@ -1,0 +1,84 @@
+# Default values for the web app Advanced settings.
+# Edit this file, then restart `python web_app.py` for changes to apply.
+
+advanced_settings:
+  # Web-only default
+  test_speed: Medium
+
+  # VISA addresses
+  dmm_addr: GPIB0::10::INSTR
+  lockin_i_addr: GPIB0::15::INSTR
+  lockin_v_addr: GPIB0::12::INSTR
+  fg_addr: GPIB0::14::INSTR
+  smu_addr: GPIB0::26::INSTR
+
+  # Output and simulation
+  output_dir: measurement_output
+  simulation_mode: false
+
+  # SMU and DC sweep
+  smu_start_v: 10.0
+  smu_stop_v: 15.0
+  smu_step_v: 0.1
+  cv_smu_step_v: 0.5
+  pre_scan_step_v: 0.10
+  max_smu_v: 15.0
+  target_vpv_v: 1.0
+  vdc_positive_threshold_v: 0.0001
+  max_vdc_pv_v: 0.80
+  stop_if_vdc_exceeds_max: false
+  stop_if_idc_negative: true
+  negative_idc_limit_a: -0.000001
+  stop_if_idc_abs_exceeds_max: true
+  max_idc_abs_a: 10.0
+  smu_current_limit_a: 0.5
+  idc_adc1_to_ampere: 1.0
+  idc_measurement_sign: 1.0
+
+  # Frequency sweep operating point
+  operating_point_mode: MPP_SEARCH
+  manual_smu_voltage_v: 12.5
+  min_mpp_vdc_pv_v: 0.0
+  min_mpp_idc_pv_a: 0.0
+
+  # Function generator and impedance sweep
+  vac_vpp: 0.010
+  fg_offset_v: 0.0
+  fg_waveform: SIN
+  freq_start_hz: 5.0
+  freq_stop_hz: 10000.0
+  settling_after_smu_s: 1.0
+  settling_after_freq_s: 4.0
+  lockin_time_constant_wait_s: 0.0
+  min_iac_mag_a: 0.000000000001
+
+  # Outlier handling
+  remeasure_z_real_outliers: true
+  max_abs_z_real_ohm: 100.0
+  max_outlier_retries: 8
+  outlier_retry_wait_s: 1.0
+  abort_if_outlier_retries_exhausted: false
+
+  # Phasor sign handling
+  invert_current_phasor: false
+  invert_voltage_phasor: false
+
+  # Lock-in configuration and read commands
+  configure_lockins: true
+  lockin_sensitivity_cmd: SEN 21
+  iac_mag_cmd: MAG.
+  iac_phase_cmd: PHA.
+  idc_adc1_cmd: ADC. 1
+  vac_mag_cmd: MAG.
+  vac_phase_cmd: PHA.
+
+  # Live lock-in monitor
+  ab_sample_interval_s: 0.2
+  ab_plot_window_points: 300
+
+  # Plotting
+  capacitance_unit: uF
+
+  # Intentional lab behavior: outputs stay on after runs.
+  turn_off_smu_at_end: false
+  turn_off_fg_at_end: false

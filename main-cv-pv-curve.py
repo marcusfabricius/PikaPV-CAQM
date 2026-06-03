@@ -34,9 +34,9 @@ from pathlib import Path
 # ============================================================
 
 # SMU voltage sweep settings
-SMU_SWEEP_START_VOLTAGE = 11.0      # [V]
+SMU_SWEEP_START_VOLTAGE = 10.0      # [V]
 SMU_SWEEP_STOP_VOLTAGE = 15.0      # [V]
-SMU_SWEEP_STEP_VOLTAGE = 0.01      # [V]
+SMU_SWEEP_STEP_VOLTAGE = 0.2      # [V]
 MAX_SMU_VOLTAGE = 15.0             # [V]
 
 # First positive measured PV voltage threshold
@@ -55,9 +55,9 @@ FG_OFFSET = 0.0                    # [V]
 FG_WAVEFORM = "SIN"                # sine wave
 
 # Frequency sweep at every voltage point
-F_START = 50.0                      # [Hz]
+F_START = 40.0                      # [Hz]
 F_STOP = 10000.0                  # [Hz]
-POINTS_PER_DECADE = 4             # logarithmic spacing
+POINTS_PER_DECADE = 3             # logarithmic spacing
 
 # Timing
 SETTLING_TIME_AFTER_FREQ = 4     # [s]

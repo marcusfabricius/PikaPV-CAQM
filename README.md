@@ -326,6 +326,17 @@ Enable `simulation mode` in Advanced settings to test:
 
 Simulation mode does not control real hardware.
 
+## End-Of-Run Instrument State
+
+The current lab workflow intentionally leaves outputs on after a run:
+
+- The function generator is configured and left `OUTP ON`.
+- The SMU is left output-on.
+- IV/PV runs set the SMU back to the measured maximum power point voltage before cleanup.
+- Frequency-sweep runs set the SMU back to the selected operating point. In MPP-search mode, that is the measured MPP voltage; in manual mode, it is the manual operating voltage.
+
+This is intentional so the device remains biased after the program releases the VISA resources. Use the instrument front panels or a deliberate shutdown script if you need to turn outputs off.
+
 ## Output Data
 
 The default GUI output directory is:

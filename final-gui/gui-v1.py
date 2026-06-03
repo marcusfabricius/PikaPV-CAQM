@@ -321,8 +321,8 @@ class Settings:
     capacitance_unit: str = "uF"
 
     # Output shutdown
-    turn_off_smu_at_end: bool = True
-    turn_off_fg_at_end: bool = True
+    turn_off_smu_at_end: bool = False
+    turn_off_fg_at_end: bool = False
 
     # Instrument commands
     iac_mag_cmd: str = "MAG."
@@ -642,10 +642,12 @@ class VisaController:
         }
 
     def shutdown_outputs(self) -> None:
-        if self.fg is not None and self.settings.turn_off_fg_at_end:
-            self.safe_write(self.fg, "OUTP OFF", "Function generator")
-        if self.smu is not None and self.settings.turn_off_smu_at_end:
-            self.safe_write(self.smu, "smua.source.output = smua.OUTPUT_OFF", "SMU")
+        if self.fg is not None:
+            self.safe_write(self.fg, "OUTP ON", "Function generator")
+            self.log("Function generator output left ON after run.")
+        if self.smu is not None:
+            self.safe_write(self.smu, "smua.source.output = smua.OUTPUT_ON", "SMU")
+            self.log("SMU output left ON after run.")
 
 
 # ============================================================================
@@ -660,11 +662,13 @@ class MeasurementEngine:
         log: Callable[[str], None],
         stop_event: threading.Event,
         live_callback: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
+        live_control_getter: Optional[Callable[[], Dict[str, Any]]] = None,
     ):
         self.settings = settings
         self.log = log
         self.stop_event = stop_event
         self.live_callback = live_callback
+        self.live_control_getter = live_control_getter
         self.last_pre_scan: Optional[PreScanSummary] = None
 
     def check_stop(self) -> None:
@@ -697,7 +701,10 @@ class MeasurementEngine:
             pre_s = pre_summary.elapsed_s
         estimates: Dict[str, str] = {}
         for name, level in SPEED_LEVELS.items():
-            n_freq = len(logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade))
+            if math.isclose(self.settings.freq_start_hz, self.settings.freq_stop_hz, rel_tol=0.0, abs_tol=1e-12):
+                n_freq = 1
+            else:
+                n_freq = len(logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade))
             settle_freq = self.settings.settling_after_freq_s * level.settling_multiplier
             per_freq_s = settle_freq + self.settings.lockin_time_constant_wait_s + 0.15
             total_s = pre_s + n_voltage * self.settings.settling_after_smu_s
@@ -717,8 +724,9 @@ class MeasurementEngine:
 
         session = VisaController(self.settings, self.log)
         try:
-            session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=False, need_smu=True)
+            session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=True, need_smu=True)
             session.configure_dmm()
+            session.configure_fg(self.settings.freq_start_hz)
             session.configure_smu(self.settings.smu_start_v)
 
             points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.pre_scan_step_v)
@@ -796,8 +804,9 @@ class MeasurementEngine:
         rows: List[Dict[str, Any]] = []
         session = VisaController(self.settings, self.log)
         try:
-            session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=False, need_smu=True)
+            session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=True, need_smu=True)
             session.configure_dmm()
+            session.configure_fg(self.settings.freq_start_hz)
             session.configure_smu(self.settings.smu_start_v)
 
             smu_points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.smu_step_v)
@@ -830,6 +839,8 @@ class MeasurementEngine:
             mpp_row = max(candidates or rows, key=lambda r: r["Pdc_pv_W"])
             self.log("Maximum power point from IV sweep:")
             self.log(f"  Vmp={mpp_row['Vdc_pv_V']:.6e} V | Imp={mpp_row['Idc_pv_A']:.6e} A | Pmax={mpp_row['Pdc_pv_W']:.6e} W | SMU={mpp_row['smu_voltage_V']:.6g} V")
+            session.set_smu_voltage(mpp_row["smu_voltage_V"])
+            self.log(f"SMU set back to IV/PV MPP voltage and left ON: {mpp_row['smu_voltage_V']:.6g} V")
 
             csv_path = output_dir / f"iv_pv_sweep_{timestamp}.csv"
             save_rows(rows, csv_path)
@@ -915,10 +926,12 @@ class MeasurementEngine:
             }
 
             if not is_outlier:
+                scale, unit_label = capacitance_scale_factor(self.settings.capacitance_unit)
                 self.log(
                     f"Freq {point_index:>3}/{total_points} | f={f_ac:>10.6g} Hz | "
                     f"Z'={z_real:>11.4e} ohm | Z''={z_imag:>11.4e} ohm | "
-                    f"|Z|={z_mag:>11.4e} ohm | phase={z_phase:>8.3f} deg | attempt={attempt}"
+                    f"|Z|={z_mag:>11.4e} ohm | phase={z_phase:>8.3f} deg | "
+                    f"C={cap_f * scale:.6g} {unit_label} | attempt={attempt}"
                 )
                 return row
 
@@ -962,7 +975,7 @@ class MeasurementEngine:
                 continue
             candidates.append({"point_index": idx, "frequency_hz": f, "capacitance_f": c})
         candidates.sort(key=lambda p: p["frequency_hz"])
-        if len(candidates) < 2:
+        if not candidates:
             return None
 
         kept = candidates[:]
@@ -999,8 +1012,14 @@ class MeasurementEngine:
         output_dir = self.settings.output_dir
         ensure_dir(output_dir)
         timestamp = now_tag()
-        freqs = logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade)
+        if math.isclose(self.settings.freq_start_hz, self.settings.freq_stop_hz, rel_tol=0.0, abs_tol=1e-12):
+            if self.settings.freq_start_hz <= 0:
+                raise ValueError("Single CV frequency must be positive.")
+            freqs = [self.settings.freq_start_hz]
+        else:
+            freqs = logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade)
         settling_s = self.settings.settling_after_freq_s * level.settling_multiplier
+        cv_repeats = 1
         all_rows: List[Dict[str, Any]] = []
         cv_rows: List[Dict[str, Any]] = []
         rejected_rows: List[Dict[str, Any]] = []
@@ -1030,7 +1049,7 @@ class MeasurementEngine:
                         break
 
             smu_points = linear_points(first_smu, min(stop_smu, self.settings.smu_stop_v), self.settings.cv_smu_step_v)
-            self.log(f"Starting CV sweep with {len(smu_points)} voltage points, {len(freqs)} frequencies, {level.repeats} repeat(s).")
+            self.log(f"Starting CV sweep with {len(smu_points)} voltage points, {len(freqs)} frequencies, {cv_repeats} pass per frequency.")
 
             for sweep_index, smu_v in enumerate(smu_points, start=1):
                 self.check_stop()
@@ -1043,10 +1062,10 @@ class MeasurementEngine:
                     break
                 self.log(f"CV voltage {sweep_index:>3}/{len(smu_points)} | SMU={smu_v:.6g} V | Vdc={vdc0:.6e} V | Idc={idc0:.6e} A")
                 rows_for_voltage: List[Dict[str, Any]] = []
-                total_freq_points = len(freqs) * level.repeats
+                total_freq_points = len(freqs) * cv_repeats
                 count = 0
                 for f_ac in freqs:
-                    for repeat_index in range(1, level.repeats + 1):
+                    for repeat_index in range(1, cv_repeats + 1):
                         count += 1
                         base = {
                             "measurement_type": "CV",
@@ -1083,7 +1102,7 @@ class MeasurementEngine:
                     "frequency_points_recorded": len(rows_for_voltage),
                     "cv_speed_level": speed_name,
                     "points_per_decade": level.points_per_decade,
-                    "repeats_per_frequency": level.repeats,
+                    "repeats_per_frequency": cv_repeats,
                 }
                 if filt:
                     cv_row.update({
@@ -1249,6 +1268,11 @@ class MeasurementEngine:
 
             if not impedance_rows:
                 raise RuntimeError("No valid impedance points were measured.")
+            session.set_smu_voltage(operating_smu)
+            if self.settings.operating_point_mode == "MPP_SEARCH":
+                self.log(f"SMU set back to MPP operating voltage and left ON: {operating_smu:.6g} V")
+            else:
+                self.log(f"SMU left ON at manual operating voltage: {operating_smu:.6g} V")
             dc_csv = output_dir / f"frequency_dc_operating_point_{timestamp}.csv"
             imp_csv = output_dir / f"frequency_impedance_sweep_{timestamp}.csv"
             rej_csv = output_dir / f"frequency_rejected_impedance_outliers_{timestamp}.csv"
@@ -1277,15 +1301,33 @@ class MeasurementEngine:
         rows: List[Dict[str, Any]] = []
         session = VisaController(self.settings, self.log)
         try:
-            session.open(need_dmm=False, need_lockin_i=True, need_lockin_v=True, need_fg=False, need_smu=False)
+            session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True)
+            session.configure_dmm()
+            session.configure_fg(self.settings.freq_start_hz)
+            session.configure_smu(self.settings.manual_smu_voltage_v)
             session.configure_lockins_for_impedance()
             self.log("Starting A-B differential live monitor. Press Stop to end.")
             start = time.time()
             window = deque(maxlen=self.settings.ab_plot_window_points)
             point_index = 0
+            active_smu_voltage = self.settings.manual_smu_voltage_v
+            active_fg_frequency = self.settings.freq_start_hz
             while not self.stop_event.is_set():
                 point_index += 1
                 t_s = time.time() - start
+                controls = self.live_control_getter() if self.live_control_getter else {}
+                requested_smu = controls.get("smu_voltage_v")
+                requested_freq = controls.get("fg_frequency_hz")
+                if requested_smu is not None and float(requested_smu) != active_smu_voltage:
+                    active_smu_voltage = float(requested_smu)
+                    session.set_smu_voltage(active_smu_voltage)
+                    self.log(f"Live monitor SMU voltage set to {active_smu_voltage:.6g} V")
+                if requested_freq is not None and float(requested_freq) != active_fg_frequency:
+                    active_fg_frequency = float(requested_freq)
+                    session.strict_write(session.fg, f"FREQ {active_fg_frequency}", "Function generator")
+                    self.log(f"Live monitor FG frequency set to {active_fg_frequency:.6g} Hz")
+
+                vdc_pv, idc_pv, idc_raw = session.read_dc()
                 raw_v_value = session.query_float(session.lockin_v, "X.", "Lock-in 12 X")
                 raw_v_phase = session.query_float(session.lockin_v, "PHA.", "Lock-in 12 phase")
                 corrected_vpv = -raw_v_value
@@ -1296,6 +1338,11 @@ class MeasurementEngine:
                     "timestamp": iso_now(),
                     "point_index": point_index,
                     "time_s": t_s,
+                    "smu_voltage_V": active_smu_voltage,
+                    "fg_frequency_Hz": active_fg_frequency,
+                    "Vpv_dc_V": vdc_pv,
+                    "Idc_pv_A": idc_pv,
+                    "Idc_adc1_raw": idc_raw,
                     "lockin12_raw_X_Vrms": raw_v_value,
                     "lockin12_raw_phase_deg": raw_v_phase,
                     "lockin12_corrected_Vpv_Vrms": corrected_vpv,
@@ -1305,7 +1352,7 @@ class MeasurementEngine:
                 }
                 rows.append(row)
                 window.append(row)
-                self.log(f"A-B t={t_s:8.2f} s | Vpv={corrected_vpv:.6e} Vrms | phase={corrected_phase:8.3f} deg | LIA15={current_value:.6e} Vrms | phase={current_phase:8.3f} deg")
+                self.log(f"A-B t={t_s:8.2f} s | Vpv_dc={vdc_pv:.6e} V | Vpv_ac={corrected_vpv:.6e} Vrms | phase={corrected_phase:8.3f} deg | Ipv_ac={current_value:.6e} Vrms | phase={current_phase:8.3f} deg")
                 if self.live_callback:
                     self.live_callback("ab_live", list(window))
                 time.sleep(self.settings.ab_sample_interval_s)

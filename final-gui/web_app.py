@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import logging
 import math
 import sys
 import threading
@@ -14,8 +15,14 @@ from typing import Any, Dict, List, Optional
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
+try:
+    import yaml  # type: ignore
+except Exception:  # pragma: no cover
+    yaml = None
+
 
 BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_SETTINGS_FILE = BASE_DIR / "default_settings.yaml"
 
 
 def load_measurement_backend():
@@ -31,6 +38,7 @@ def load_measurement_backend():
 backend = load_measurement_backend()
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
 MODE_TO_SELECTION = {
@@ -49,21 +57,21 @@ MODE_TO_SELECTION = {
 
 DEFAULT_PLOTS = {
     "standard_dc": [
-        {"id": "iv", "label": "I-V", "x": "Vdc_pv_V", "y": "Idc_pv_A", "dataset": "iv_pv_sweep"},
-        {"id": "pv", "label": "P-V", "x": "Vdc_pv_V", "y": "Pdc_pv_W", "dataset": "iv_pv_sweep"},
+        {"id": "iv", "label": "I-V", "x": "Vdc_pv_V", "y": "Idc_pv_A", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
+        {"id": "pv", "label": "P-V", "x": "Vdc_pv_V", "y": "Pdc_pv_W", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
     ],
     "frequency_sweep": [
-        {"id": "zmag_freq", "label": "Z magnitude vs frequency", "x": "f_ac_Hz", "y": "Z_magnitude_ohm", "dataset": "frequency_sweep", "xScale": "log"},
+        {"id": "zmag_freq", "label": "Z magnitude vs frequency", "x": "f_ac_Hz", "y": "Z_magnitude_ohm", "dataset": "frequency_sweep", "xScale": "log", "yMin": 0},
         {"id": "zreal_freq", "label": "Z real vs frequency", "x": "f_ac_Hz", "y": "Z_real_ohm", "dataset": "frequency_sweep", "xScale": "log"},
         {"id": "zimag_freq", "label": "Z imaginary vs frequency", "x": "f_ac_Hz", "y": "Z_imag_ohm", "dataset": "frequency_sweep", "xScale": "log"},
         {"id": "phase_freq", "label": "Phase vs frequency", "x": "f_ac_Hz", "y": "Z_phase_deg", "dataset": "frequency_sweep", "xScale": "log"},
-        {"id": "cap_freq", "label": "Capacitance vs frequency", "x": "f_ac_Hz", "y": "C_uncorrected_F", "dataset": "frequency_sweep", "xScale": "log"},
-        {"id": "nyquist", "label": "Nyquist plot", "x": "Z_real_ohm", "y": "neg_Z_imag_ohm", "dataset": "frequency_sweep"},
+        {"id": "cap_freq", "label": "Capacitance vs frequency", "x": "f_ac_Hz", "y": "C_uncorrected_F", "dataset": "frequency_sweep", "xScale": "log", "yMin": 0, "filterBelowMin": True},
+        {"id": "nyquist", "label": "Nyquist plot", "x": "Z_real_ohm", "y": "neg_Z_imag_ohm", "dataset": "frequency_sweep", "xMin": 0, "yMin": 0},
     ],
     "complete_ac": [
-        {"id": "cv", "label": "C-V", "x": "Vdc_pv_median_V", "y": "C_final_median_F", "dataset": "cv_curve"},
-        {"id": "cf", "label": "C-f at selected voltage", "x": "f_ac_Hz", "y": "C_uncorrected_F", "dataset": "cv_frequency_sweeps", "xScale": "log"},
-        {"id": "zmag_freq", "label": "Z magnitude vs frequency", "x": "f_ac_Hz", "y": "Z_magnitude_ohm", "dataset": "cv_frequency_sweeps", "xScale": "log"},
+        {"id": "cv", "label": "C-V", "x": "Vdc_pv_median_V", "y": "C_final_median_F", "dataset": "cv_curve", "yMin": 0, "filterBelowMin": True},
+        {"id": "cf", "label": "C-f at selected voltage", "x": "f_ac_Hz", "y": "C_uncorrected_F", "dataset": "cv_frequency_sweeps", "xScale": "log", "yMin": 0, "filterBelowMin": True},
+        {"id": "zmag_freq", "label": "Z magnitude vs frequency", "x": "f_ac_Hz", "y": "Z_magnitude_ohm", "dataset": "cv_frequency_sweeps", "xScale": "log", "yMin": 0},
         {"id": "phase_freq", "label": "Phase vs frequency", "x": "f_ac_Hz", "y": "Z_phase_deg", "dataset": "cv_frequency_sweeps", "xScale": "log"},
     ],
     "live_lockin": [
@@ -87,6 +95,7 @@ class RunState:
         self.output_files: List[str] = []
         self.combined_csv: Optional[Path] = None
         self.live_rows: List[Dict[str, Any]] = []
+        self.live_control: Dict[str, Any] = {}
         self.stop_event = threading.Event()
         self.worker: Optional[threading.Thread] = None
 
@@ -105,18 +114,63 @@ class RunState:
                 "output_files": self.output_files,
                 "combined_csv": str(self.combined_csv) if self.combined_csv else "",
                 "live_rows": self.live_rows[-300:],
+                "live_control": dict(self.live_control),
             }
 
 
 STATE = RunState()
 
 
-def default_settings_dict() -> Dict[str, Any]:
-    return serialize_summary(asdict(backend.Settings()))
-
-
 def terminal_log(message: str) -> None:
     print(f"[MeasureApp Web] {message}", flush=True)
+
+
+def load_default_settings_file() -> Dict[str, Any]:
+    if not DEFAULT_SETTINGS_FILE.exists():
+        return {}
+    with DEFAULT_SETTINGS_FILE.open("r", encoding="utf-8") as handle:
+        if yaml is None:
+            return parse_simple_yaml_mapping(handle.read())
+        loaded = yaml.safe_load(handle) or {}
+    if not isinstance(loaded, dict):
+        raise ValueError("default_settings.yaml must contain a YAML mapping at the top level.")
+    return loaded
+
+
+def parse_simple_yaml_scalar(value: str) -> Any:
+    value = value.strip()
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    if value.lower() in {"null", "none", "~"}:
+        return None
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    try:
+        if any(ch in value for ch in [".", "e", "E"]):
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+
+
+def parse_simple_yaml_mapping(text: str) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    current_section: Optional[Dict[str, Any]] = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith(" ") and line.endswith(":"):
+            section_name = line[:-1].strip()
+            result[section_name] = {}
+            current_section = result[section_name]
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        target = current_section if raw_line.startswith(" ") and current_section is not None else result
+        target[key.strip()] = parse_simple_yaml_scalar(value)
+    return result
 
 
 def safe_float(value: Any) -> Optional[float]:
@@ -163,9 +217,37 @@ def coerce_value(raw: Any, current: Any) -> Any:
     return str(raw)
 
 
+def configured_defaults_section() -> Dict[str, Any]:
+    config = load_default_settings_file()
+    section = config.get("advanced_settings", config)
+    if not isinstance(section, dict):
+        raise ValueError("default_settings.yaml advanced_settings must be a mapping.")
+    return section
+
+
+def settings_with_config_defaults() -> Any:
+    settings = backend.Settings()
+    defaults = configured_defaults_section()
+    for field in fields(settings):
+        if field.name in defaults:
+            setattr(settings, field.name, coerce_value(defaults[field.name], getattr(settings, field.name)))
+    return settings
+
+
+def default_speed() -> str:
+    defaults = configured_defaults_section()
+    return str(defaults.get("test_speed", "Medium"))
+
+
+def default_settings_dict() -> Dict[str, Any]:
+    data = serialize_summary(asdict(settings_with_config_defaults()))
+    data["test_speed"] = default_speed()
+    return data
+
+
 def settings_from_payload(payload: Dict[str, Any]) -> Any:
     settings_data = payload.get("settings", {})
-    settings = backend.Settings()
+    settings = settings_with_config_defaults()
     for field in fields(settings):
         if field.name in settings_data:
             setattr(settings, field.name, coerce_value(settings_data[field.name], getattr(settings, field.name)))
@@ -193,7 +275,7 @@ def settings_from_payload(payload: Dict[str, Any]) -> Any:
         if ac.get("frequency_mode") == "single":
             f = float(ac.get("single_frequency_hz") or settings.freq_start_hz)
             settings.freq_start_hz = f
-            settings.freq_stop_hz = f * 1.01
+            settings.freq_stop_hz = f
         if "cv_smu_step_v" in ac:
             settings.cv_smu_step_v = float(ac["cv_smu_step_v"])
     return settings
@@ -233,10 +315,62 @@ def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, 
                 combined["SMU_V"] = combined["smu_voltage_V"]
             rows.append(combined)
 
+    if not output_dir.is_absolute():
+        output_dir = BASE_DIR / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"combined_{mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     backend.save_rows(rows, path)
-    return path
+    return path.resolve()
+
+
+def infer_mode_from_rows(rows: List[Dict[str, Any]]) -> str:
+    for row in rows:
+        mode = str(row.get("run_mode", "")).strip()
+        if mode in MODE_TO_SELECTION:
+            return mode
+        measurement_type = str(row.get("measurement_type", "")).strip().upper()
+        if measurement_type == "CV":
+            return "complete_ac"
+        if measurement_type == "FREQUENCY_SWEEP":
+            return "frequency_sweep"
+    columns = set()
+    for row in rows[:50]:
+        columns.update(row.keys())
+    if {"Vdc_pv_median_V", "C_final_median_F"} & columns:
+        return "complete_ac"
+    if {"Z_real_ohm", "Z_imag_ohm", "f_ac_Hz", "frequency_hz"} & columns:
+        return "frequency_sweep"
+    if {"lockin12_corrected_Vpv_Vrms", "lockin15_X_Vrms"} & columns:
+        return "live_lockin"
+    if {"Vdc_pv_V", "Idc_pv_A", "Pdc_pv_W", "Power"} & columns:
+        return "standard_dc"
+    return "standard_dc"
+
+
+def datasets_from_uploaded_rows(rows: List[Dict[str, Any]], fallback_name: str) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        dataset_name = str(row.get("dataset_name", "")).strip()
+        if dataset_name:
+            grouped.setdefault(dataset_name, []).append(row)
+    if grouped:
+        return grouped
+
+    mode = infer_mode_from_rows(rows)
+    columns = set()
+    for row in rows[:50]:
+        columns.update(row.keys())
+    if mode == "complete_ac" and {"Vdc_pv_median_V", "C_final_median_F"} & columns:
+        return {"cv_curve": rows}
+    if mode == "complete_ac":
+        return {"cv_frequency_sweeps": rows}
+    if mode == "frequency_sweep":
+        return {"frequency_sweep": rows}
+    if mode == "live_lockin":
+        return {"ab_live": rows}
+    if mode == "standard_dc":
+        return {"iv_pv_sweep": rows}
+    return {fallback_name: rows}
 
 
 def run_measurement(payload: Dict[str, Any]) -> None:
@@ -250,9 +384,13 @@ def run_measurement(payload: Dict[str, Any]) -> None:
             STATE.live_rows = rows[-300:]
             STATE.datasets[name] = rows
 
+    def live_control_getter() -> Dict[str, Any]:
+        with STATE.lock:
+            return dict(STATE.live_control)
+
     try:
         terminal_log(f"Starting {mode} measurement with {speed} speed.")
-        engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback)
+        engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback, live_control_getter)
         result = engine.run_selected(selected, speed)
         combined = save_combined_csv(mode, speed, result.datasets, settings.output_dir)
         with STATE.lock:
@@ -298,6 +436,7 @@ def start():
     payload = request.get_json(force=True)
     mode = payload.get("mode", "standard_dc")
     speed = payload.get("speed", "Medium")
+    settings = settings_from_payload(payload)
     with STATE.lock:
         if STATE.status == "running":
             return jsonify({"ok": False, "error": "A measurement is already running."}), 409
@@ -312,10 +451,29 @@ def start():
         STATE.output_files = []
         STATE.combined_csv = None
         STATE.live_rows = []
+        STATE.live_control = {
+            "smu_voltage_v": settings.manual_smu_voltage_v,
+            "fg_frequency_hz": settings.freq_start_hz,
+        }
         STATE.stop_event = threading.Event()
         STATE.worker = threading.Thread(target=run_measurement, args=(payload,), daemon=True)
         STATE.worker.start()
     return jsonify({"ok": True})
+
+
+@app.post("/api/live/control")
+def live_control():
+    payload = request.get_json(force=True)
+    updates: Dict[str, Any] = {}
+    if "smu_voltage_v" in payload:
+        updates["smu_voltage_v"] = float(payload["smu_voltage_v"])
+    if "fg_frequency_hz" in payload:
+        updates["fg_frequency_hz"] = float(payload["fg_frequency_hz"])
+    with STATE.lock:
+        STATE.live_control.update(updates)
+        current = dict(STATE.live_control)
+    terminal_log(f"Live control updated: {updates}")
+    return jsonify({"ok": True, "live_control": current})
 
 
 @app.post("/api/stop")
@@ -353,26 +511,44 @@ def upload():
     with path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
     dataset_name = path.stem
+    inferred_mode = infer_mode_from_rows(rows)
+    datasets = datasets_from_uploaded_rows(rows, dataset_name)
     with STATE.lock:
         STATE.status = "completed"
-        STATE.mode = "uploaded_csv"
-        STATE.datasets = {dataset_name: rows}
-        STATE.output_files = [str(path)]
-        STATE.combined_csv = path
+        STATE.mode = inferred_mode
+        STATE.datasets = datasets
+        STATE.output_files = [str(path.resolve())]
+        STATE.combined_csv = path.resolve()
         STATE.short_error = ""
         STATE.completed_at = datetime.now().isoformat(timespec="seconds")
-    terminal_log(f"Uploaded CSV loaded for plotting: {path}")
-    return jsonify({"ok": True, "dataset": dataset_name, "rows": len(rows)})
+    terminal_log(f"Uploaded CSV loaded for plotting: {path} | inferred mode={inferred_mode}")
+    return jsonify({"ok": True, "dataset": dataset_name, "mode": inferred_mode, "rows": len(rows)})
 
 
 @app.get("/download/combined")
 def download_combined():
     with STATE.lock:
         path = STATE.combined_csv
+        output_files = list(STATE.output_files)
+    if path and not path.is_absolute():
+        candidates = [BASE_DIR / path, Path.cwd() / path, path.resolve()]
+        path = next((candidate for candidate in candidates if candidate.exists()), path)
+    if (not path or not path.exists()) and output_files:
+        for raw in output_files:
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidates = [BASE_DIR / candidate, Path.cwd() / candidate, candidate.resolve()]
+                candidate = next((item for item in candidates if item.exists()), candidate)
+            if candidate.exists() and candidate.suffix.lower() == ".csv":
+                path = candidate
+                break
     if not path or not path.exists():
         return jsonify({"ok": False, "error": "No combined CSV is available yet."}), 404
     return send_file(path, as_attachment=True)
 
 
 if __name__ == "__main__":
+    terminal_log(f"Script: {Path(__file__).resolve()}")
+    terminal_log(f"Working directory: {Path.cwd()}")
+    terminal_log("Open browser: http://127.0.0.1:5000")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
