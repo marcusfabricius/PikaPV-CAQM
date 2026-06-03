@@ -6,22 +6,22 @@ advanced_settings:
   test_speed: Medium
 
   # VISA addresses
-  dmm_addr: GPIB0::10::INSTR
-  lockin_i_addr: GPIB0::15::INSTR
-  lockin_v_addr: GPIB0::12::INSTR
-  fg_addr: GPIB0::14::INSTR
-  smu_addr: GPIB0::26::INSTR
+  dmm_addr: 10
+  lockin_i_addr: 15
+  lockin_v_addr: 12
+  fg_addr: 14
+  smu_addr: 26
 
   # Output and simulation
   output_dir: measurement_output
   simulation_mode: false
 
   # SMU and DC sweep
-  smu_start_v: 10.0
+  auto_smu_range: true
+  smu_start_v: 5.0
   smu_stop_v: 15.0
   smu_step_v: 0.1
   cv_smu_step_v: 0.5
-  pre_scan_step_v: 0.10
   max_smu_v: 15.0
   target_vpv_v: 1.0
   vdc_positive_threshold_v: 0.0001

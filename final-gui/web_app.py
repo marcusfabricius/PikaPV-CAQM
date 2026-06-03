@@ -57,22 +57,18 @@ MODE_TO_SELECTION = {
 
 DEFAULT_PLOTS = {
     "standard_dc": [
-        {"id": "iv", "label": "I-V", "x": "Vdc_pv_V", "y": "Idc_pv_A", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
-        {"id": "pv", "label": "P-V", "x": "Vdc_pv_V", "y": "Pdc_pv_W", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
+        {"id": "iv", "label": "I-V", "x": "Vdc_pv", "y": "Idc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
+        {"id": "pv", "label": "P-V", "x": "Vdc_pv", "y": "Pdc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
     ],
     "frequency_sweep": [
-        {"id": "zmag_freq", "label": "Z magnitude vs frequency", "x": "f_ac_Hz", "y": "Z_magnitude_ohm", "dataset": "frequency_sweep", "xScale": "log", "yMin": 0},
-        {"id": "zreal_freq", "label": "Z real vs frequency", "x": "f_ac_Hz", "y": "Z_real_ohm", "dataset": "frequency_sweep", "xScale": "log"},
-        {"id": "zimag_freq", "label": "Z imaginary vs frequency", "x": "f_ac_Hz", "y": "Z_imag_ohm", "dataset": "frequency_sweep", "xScale": "log"},
-        {"id": "phase_freq", "label": "Phase vs frequency", "x": "f_ac_Hz", "y": "Z_phase_deg", "dataset": "frequency_sweep", "xScale": "log"},
-        {"id": "cap_freq", "label": "Capacitance vs frequency", "x": "f_ac_Hz", "y": "C_uncorrected_F", "dataset": "frequency_sweep", "xScale": "log", "yMin": 0, "filterBelowMin": True},
-        {"id": "nyquist", "label": "Nyquist plot", "x": "Z_real_ohm", "y": "neg_Z_imag_ohm", "dataset": "frequency_sweep", "xMin": 0, "yMin": 0},
+        {"id": "zreal_freq", "label": "Z_real over frequency", "x": "frequency", "y": "Z_real", "dataset": "frequency_sweep", "xScale": "log"},
+        {"id": "zimag_freq", "label": "Z_imag over frequency", "x": "frequency", "y": "Z_imag", "dataset": "frequency_sweep", "xScale": "log"},
+        {"id": "zmag_freq", "label": "Z_mag over frequency", "x": "frequency", "y": "Z_mag", "dataset": "frequency_sweep", "xScale": "log", "yMin": 0},
+        {"id": "phase_freq", "label": "Phase_Z over frequency", "x": "frequency", "y": "Phase_Z", "dataset": "frequency_sweep", "xScale": "log"},
     ],
     "complete_ac": [
-        {"id": "cv", "label": "C-V", "x": "Vdc_pv_median_V", "y": "C_final_median_F", "dataset": "cv_curve", "yMin": 0, "filterBelowMin": True},
-        {"id": "cf", "label": "C-f at selected voltage", "x": "f_ac_Hz", "y": "C_uncorrected_F", "dataset": "cv_frequency_sweeps", "xScale": "log", "yMin": 0, "filterBelowMin": True},
-        {"id": "zmag_freq", "label": "Z magnitude vs frequency", "x": "f_ac_Hz", "y": "Z_magnitude_ohm", "dataset": "cv_frequency_sweeps", "xScale": "log", "yMin": 0},
-        {"id": "phase_freq", "label": "Phase vs frequency", "x": "f_ac_Hz", "y": "Z_phase_deg", "dataset": "cv_frequency_sweeps", "xScale": "log"},
+        {"id": "cv", "label": "C-V", "x": "Vdc_pv", "y": "C", "dataset": "cv_curve", "yMin": 0, "filterBelowMin": True},
+        {"id": "cf_at_vdc", "label": "C over frequency at Vdc_pv", "x": "frequency", "y": "C", "dataset": "cv_frequency_sweeps", "xScale": "log", "yMin": 0, "filterBelowMin": True, "needsTargetVdc": True},
     ],
     "live_lockin": [
         {"id": "lockin_value", "label": "Lock-in value over time", "x": "time_s", "y": "lockin12_corrected_Vpv_Vrms", "dataset": "ab_live"},
@@ -96,6 +92,7 @@ class RunState:
         self.combined_csv: Optional[Path] = None
         self.live_rows: List[Dict[str, Any]] = []
         self.live_control: Dict[str, Any] = {}
+        self.smu_calibration: Dict[str, Any] = {}
         self.stop_event = threading.Event()
         self.worker: Optional[threading.Thread] = None
 
@@ -115,6 +112,7 @@ class RunState:
                 "combined_csv": str(self.combined_csv) if self.combined_csv else "",
                 "live_rows": self.live_rows[-300:],
                 "live_control": dict(self.live_control),
+                "smu_calibration": dict(self.smu_calibration),
             }
 
 
@@ -217,6 +215,13 @@ def coerce_value(raw: Any, current: Any) -> Any:
     return str(raw)
 
 
+def normalize_gpib_address(value: Any) -> str:
+    text = str(value).strip()
+    if text.upper().startswith("GPIB"):
+        return text
+    return f"GPIB0::{text}::INSTR"
+
+
 def configured_defaults_section() -> Dict[str, Any]:
     config = load_default_settings_file()
     section = config.get("advanced_settings", config)
@@ -230,7 +235,10 @@ def settings_with_config_defaults() -> Any:
     defaults = configured_defaults_section()
     for field in fields(settings):
         if field.name in defaults:
-            setattr(settings, field.name, coerce_value(defaults[field.name], getattr(settings, field.name)))
+            value = coerce_value(defaults[field.name], getattr(settings, field.name))
+            if field.name in {"dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr"}:
+                value = normalize_gpib_address(value)
+            setattr(settings, field.name, value)
     return settings
 
 
@@ -250,7 +258,10 @@ def settings_from_payload(payload: Dict[str, Any]) -> Any:
     settings = settings_with_config_defaults()
     for field in fields(settings):
         if field.name in settings_data:
-            setattr(settings, field.name, coerce_value(settings_data[field.name], getattr(settings, field.name)))
+            value = coerce_value(settings_data[field.name], getattr(settings, field.name))
+            if field.name in {"dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr"}:
+                value = normalize_gpib_address(value)
+            setattr(settings, field.name, value)
 
     mode = payload.get("mode", "standard_dc")
     if mode == "frequency_sweep":
@@ -307,12 +318,45 @@ def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, 
             }
             if "frequency_hz" not in combined and "f_ac_Hz" in combined:
                 combined["frequency_hz"] = combined["f_ac_Hz"]
+            if "frequency" not in combined and "f_ac_Hz" in combined:
+                combined["frequency"] = combined["f_ac_Hz"]
+            if "Z_real" not in combined and "Z_real_ohm" in combined:
+                combined["Z_real"] = combined["Z_real_ohm"]
+            if "Z_imag" not in combined and "Z_imag_ohm" in combined:
+                combined["Z_imag"] = combined["Z_imag_ohm"]
+            if "Z_mag" not in combined:
+                combined["Z_mag"] = combined.get("Z_magnitude_ohm", combined.get("Z_mag_ohm", ""))
+            if "Phase_Z" not in combined and "Z_phase_deg" in combined:
+                combined["Phase_Z"] = combined["Z_phase_deg"]
+            if "Vac_pv" not in combined and "Vac_mag_corrected_V" in combined:
+                combined["Vac_pv"] = combined["Vac_mag_corrected_V"]
+            if "Iac_pv" not in combined and "Iac_mag_corrected_A" in combined:
+                combined["Iac_pv"] = combined["Iac_mag_corrected_A"]
+            if "Phase_Vac" not in combined and "Vac_phase_corrected_deg" in combined:
+                combined["Phase_Vac"] = combined["Vac_phase_corrected_deg"]
+            if "Phase_Iac" not in combined and "Iac_phase_corrected_deg" in combined:
+                combined["Phase_Iac"] = combined["Iac_phase_corrected_deg"]
             if "capacitance" not in combined:
                 combined["capacitance"] = combined.get("C_final_median_F", combined.get("C_uncorrected_F", ""))
+            if "C" not in combined:
+                combined["C"] = combined.get("C_final_median_F", combined.get("C_uncorrected_F", ""))
+            if "Vdc_pv" not in combined:
+                combined["Vdc_pv"] = combined.get("Vdc_pv_V", combined.get("Vdc_pv_median_V", combined.get("Vdc_pv_mean_V", "")))
+            if "Idc_pv" not in combined:
+                combined["Idc_pv"] = combined.get("Idc_pv_A", combined.get("Idc_pv_median_A", ""))
             if "Power" not in combined and "Pdc_pv_W" in combined:
                 combined["Power"] = combined["Pdc_pv_W"]
+            if "Pdc_pv" not in combined:
+                combined["Pdc_pv"] = combined.get("Pdc_pv_W", combined.get("Power", ""))
             if "SMU_V" not in combined and "smu_voltage_V" in combined:
                 combined["SMU_V"] = combined["smu_voltage_V"]
+            if "V_SMU" not in combined:
+                combined["V_SMU"] = combined.get("smu_voltage_V", combined.get("SMU_V", combined.get("operating_point_smu_voltage_V", "")))
+            if dataset_name == "frequency_sweep":
+                combined["final_Vdc_pv"] = combined.get("operating_point_reference_Vdc_pv_V", combined.get("Vdc_pv", ""))
+                combined["final_Idc_pv"] = combined.get("operating_point_reference_Idc_pv_A", combined.get("Idc_pv", ""))
+                combined["final_Pdc_pv"] = combined.get("operating_point_reference_Pdc_pv_W", combined.get("Pdc_pv", ""))
+                combined["final_V_SMU"] = combined.get("operating_point_smu_voltage_V", combined.get("V_SMU", ""))
             rows.append(combined)
 
     if not output_dir.is_absolute():
@@ -389,6 +433,24 @@ def run_measurement(payload: Dict[str, Any]) -> None:
             return dict(STATE.live_control)
 
     try:
+        with STATE.lock:
+            existing_calibration = dict(STATE.smu_calibration)
+        if settings.auto_smu_range and not existing_calibration:
+            terminal_log("Automatic SMU range is enabled and no calibration exists. Calibrating before measurement...")
+            with STATE.lock:
+                STATE.mode = "smu_calibration"
+            calibration_result = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event).run_smu_range_calibration()
+            calibration = serialize_summary(calibration_result.summary)
+            apply_calibration_to_settings(settings, calibration)
+            with STATE.lock:
+                STATE.smu_calibration = calibration
+                STATE.output_files.extend(str(path) for path in calibration_result.output_files)
+            terminal_log("Automatic SMU range calibration complete. Continuing measurement.")
+        elif settings.auto_smu_range and existing_calibration:
+            apply_calibration_to_settings(settings, existing_calibration)
+
+        with STATE.lock:
+            STATE.mode = mode
         terminal_log(f"Starting {mode} measurement with {speed} speed.")
         engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback, live_control_getter)
         result = engine.run_selected(selected, speed)
@@ -419,6 +481,40 @@ def run_measurement(payload: Dict[str, Any]) -> None:
             STATE.short_error = str(exc)
             STATE.completed_at = datetime.now().isoformat(timespec="seconds")
         terminal_log("Measurement failed:\n" + traceback.format_exc())
+
+
+def apply_calibration_to_settings(settings: Any, calibration: Dict[str, Any]) -> None:
+    for key in ["smu_start_v", "smu_stop_v"]:
+        if key in calibration:
+            setattr(settings, key, float(calibration[key]))
+
+
+def run_calibration(payload: Dict[str, Any]) -> None:
+    settings = settings_from_payload(payload)
+    try:
+        terminal_log("Manual SMU range calibration requested.")
+        result = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event).run_smu_range_calibration()
+        calibration = serialize_summary(result.summary)
+        with STATE.lock:
+            STATE.status = "idle"
+            STATE.mode = ""
+            STATE.short_error = ""
+            STATE.smu_calibration = calibration
+            STATE.output_files = [str(path) for path in result.output_files]
+            STATE.completed_at = datetime.now().isoformat(timespec="seconds")
+        terminal_log("Manual SMU range calibration complete.")
+    except backend.UserStop as exc:
+        with STATE.lock:
+            STATE.status = "stopped"
+            STATE.short_error = str(exc)
+            STATE.completed_at = datetime.now().isoformat(timespec="seconds")
+        terminal_log(str(exc))
+    except Exception as exc:
+        with STATE.lock:
+            STATE.status = "failed"
+            STATE.short_error = str(exc)
+            STATE.completed_at = datetime.now().isoformat(timespec="seconds")
+        terminal_log("Calibration failed:\n" + traceback.format_exc())
 
 
 @app.get("/")
@@ -457,6 +553,23 @@ def start():
         }
         STATE.stop_event = threading.Event()
         STATE.worker = threading.Thread(target=run_measurement, args=(payload,), daemon=True)
+        STATE.worker.start()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/calibrate-smu")
+def calibrate_smu():
+    payload = request.get_json(force=True)
+    with STATE.lock:
+        if STATE.status == "running":
+            return jsonify({"ok": False, "error": "A measurement is already running."}), 409
+        STATE.status = "running"
+        STATE.mode = "smu_calibration"
+        STATE.short_error = ""
+        STATE.started_at = datetime.now().isoformat(timespec="seconds")
+        STATE.completed_at = ""
+        STATE.stop_event = threading.Event()
+        STATE.worker = threading.Thread(target=run_calibration, args=(payload,), daemon=True)
         STATE.worker.start()
     return jsonify({"ok": True})
 

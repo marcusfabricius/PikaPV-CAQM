@@ -3,21 +3,21 @@ const modes = {
     title: "Standard DC measurement",
     examples: "I-V curve and P-V curve.",
     body: "Sweeps the SMU DC voltage, reads PV voltage/current, applies DC safety checks, and records power.",
-    vars: ["Vdc_pv", "Idc_pv", "Power", "SMU_V"],
+    vars: ["Vdc_pv", "Idc_pv", "Pdc_pv", "V_SMU"],
     plots: "I-V, P-V"
   },
   frequency_sweep: {
     title: "Standard frequency sweep",
     examples: "Z-f, Z'-f, Z''-f, phase-f, C-f and Nyquist plots.",
     body: "Finds an MPP operating point or uses a manual SMU voltage, then performs an impedance frequency sweep.",
-    vars: ["frequency_hz", "Z_real_ohm", "Z_imag_ohm", "Z_mag_ohm", "Z_phase_deg", "capacitance", "Vdc_pv", "Idc_pv"],
+    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac"],
     plots: "Z magnitude, Z real, Z imaginary, phase, capacitance, Nyquist"
   },
   complete_ac: {
     title: "Complete AC measurement",
     examples: "C-V curves with a frequency range, plus impedance-related plots.",
     body: "Runs CV-style voltage points and frequency sweeps while preserving the backend filtering and outlier handling.",
-    vars: ["Vdc_pv", "capacitance", "frequency_hz", "Z_real_ohm", "Z_imag_ohm", "Z_mag_ohm", "Z_phase_deg"],
+    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
     plots: "C-V, C-f, impedance plots"
   },
   live_lockin: {
@@ -42,32 +42,35 @@ const variableOptionsByMode = {
   standard_dc: [
     ["Vdc_pv", "Vdc_pv_V"],
     ["Idc_pv", "Idc_pv_A"],
-    ["Power", "Pdc_pv_W"],
-    ["SMU_V", "smu_voltage_V"],
-    ["point_index", "point_index"]
+    ["Pdc_pv", "Pdc_pv_W"],
+    ["V_SMU", "smu_voltage_V"]
   ],
   frequency_sweep: [
-    ["frequency_hz", "f_ac_Hz"],
-    ["Z_real_ohm", "Z_real_ohm"],
-    ["Z_imag_ohm", "Z_imag_ohm"],
-    ["Z_mag_ohm", "Z_magnitude_ohm"],
-    ["Z_phase_deg", "Z_phase_deg"],
-    ["capacitance", "C_uncorrected_F"],
-    ["Vdc_pv", "Vdc_pv_V"],
-    ["Idc_pv", "Idc_pv_A"],
-    ["SMU_V", "smu_voltage_V"],
-    ["Power", "Pdc_pv_W"]
+    ["frequency", "f_ac_Hz"],
+    ["Z_real", "Z_real_ohm"],
+    ["Z_imag", "Z_imag_ohm"],
+    ["Z_mag", "Z_magnitude_ohm"],
+    ["Phase_Z", "Z_phase_deg"],
+    ["C", "C_uncorrected_F"],
+    ["Vac_pv", "Vac_mag_corrected_V"],
+    ["Iac_pv", "Iac_mag_corrected_A"],
+    ["Phase_Vac", "Vac_phase_corrected_deg"],
+    ["Phase_Iac", "Iac_phase_corrected_deg"]
   ],
   complete_ac: [
+    ["frequency", "f_ac_Hz"],
+    ["Z_real", "Z_real_ohm"],
+    ["Z_imag", "Z_imag_ohm"],
+    ["Z_mag", "Z_magnitude_ohm"],
+    ["Phase_Z", "Z_phase_deg"],
+    ["C", "C_final_median_F"],
+    ["Vac_pv", "Vac_mag_corrected_V"],
+    ["Iac_pv", "Iac_mag_corrected_A"],
+    ["Phase_Vac", "Vac_phase_corrected_deg"],
+    ["Phase_Iac", "Iac_phase_corrected_deg"],
     ["Vdc_pv", "Vdc_pv_median_V"],
-    ["capacitance", "C_final_median_F"],
-    ["frequency_hz", "f_ac_Hz"],
-    ["Z_real_ohm", "Z_real_ohm"],
-    ["Z_imag_ohm", "Z_imag_ohm"],
-    ["Z_mag_ohm", "Z_magnitude_ohm"],
-    ["Z_phase_deg", "Z_phase_deg"],
-    ["SMU_V", "smu_voltage_V"],
-    ["Idc_pv", "Idc_pv_A"]
+    ["Idc_pv", "Idc_pv_A"],
+    ["Pdc_pv", "Pdc_pv_W"]
   ],
   live_lockin: [
     ["time_s", "time_s"],
@@ -79,13 +82,20 @@ const variableOptionsByMode = {
 };
 
 const valueAliases = {
-  Vdc_pv: ["Vdc_pv_V", "Vdc_pv_median_V", "Vdc_pv_mean_V"],
-  Idc_pv: ["Idc_pv_A", "Idc_pv_median_A"],
-  Power: ["Pdc_pv_W"],
-  SMU_V: ["smu_voltage_V", "operating_point_smu_voltage_V"],
-  frequency_hz: ["f_ac_Hz"],
-  Z_mag_ohm: ["Z_magnitude_ohm", "Z_mag_ohm"],
-  capacitance: ["C_final_median_F", "C_uncorrected_F"]
+  Vdc_pv: ["Vdc_pv_V", "Vdc_pv_median_V", "Vdc_pv_mean_V", "operating_point_reference_Vdc_pv_V", "final_Vdc_pv"],
+  Idc_pv: ["Idc_pv_A", "Idc_pv_median_A", "operating_point_reference_Idc_pv_A", "final_Idc_pv"],
+  Pdc_pv: ["Pdc_pv_W", "Power", "operating_point_reference_Pdc_pv_W", "final_Pdc_pv"],
+  V_SMU: ["smu_voltage_V", "SMU_V", "operating_point_smu_voltage_V", "final_V_SMU"],
+  frequency: ["f_ac_Hz", "frequency_hz"],
+  Z_real: ["Z_real_ohm"],
+  Z_imag: ["Z_imag_ohm"],
+  Z_mag: ["Z_magnitude_ohm", "Z_mag_ohm"],
+  Phase_Z: ["Z_phase_deg"],
+  C: ["C_final_median_F", "C_uncorrected_F", "capacitance"],
+  Vac_pv: ["Vac_mag_corrected_V"],
+  Iac_pv: ["Iac_mag_corrected_A"],
+  Phase_Vac: ["Vac_phase_corrected_deg"],
+  Phase_Iac: ["Iac_phase_corrected_deg"]
 };
 
 function $(id) { return document.getElementById(id); }
@@ -207,31 +217,84 @@ function openInfo(key) {
 }
 
 function buildAdvanced() {
-  const keys = [
-    "test_speed",
-    "dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr",
-    "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "smu_current_limit_a",
-    "max_idc_abs_a", "idc_measurement_sign", "idc_adc1_to_ampere", "vac_vpp", "fg_offset_v",
-    "iac_mag_cmd", "iac_phase_cmd", "idc_adc1_cmd", "vac_mag_cmd", "vac_phase_cmd",
-    "lockin_sensitivity_cmd", "settling_after_smu_s", "settling_after_freq_s",
-    "max_abs_z_real_ohm", "max_outlier_retries", "simulation_mode", "output_dir"
+  const sections = [
+    ["Measurement speed mode", ["test_speed"]],
+    ["Settling times", ["settling_after_smu_s", "settling_after_freq_s", "lockin_time_constant_wait_s", "ab_sample_interval_s"]],
+    ["SMU settings", ["auto_smu_range", "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "manual_smu_voltage_v", "target_vpv_v", "operating_point_mode"]],
+    ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
+    ["Lock In Amp settings", ["iac_mag_cmd", "iac_phase_cmd", "idc_adc1_cmd", "vac_mag_cmd", "vac_phase_cmd", "configure_lockins", "lockin_sensitivity_cmd", "invert_current_phasor", "invert_voltage_phasor"]],
+    ["GPIB addresses", ["dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr"]],
+    ["Others", ["freq_start_hz", "freq_stop_hz", "vac_vpp", "fg_offset_v", "fg_waveform", "max_abs_z_real_ohm", "max_outlier_retries", "outlier_retry_wait_s", "remeasure_z_real_outliers", "abort_if_outlier_retries_exhausted", "simulation_mode", "output_dir", "capacitance_unit"]]
   ];
-  $("advancedGrid").innerHTML = keys.map(key => {
+  $("advancedGrid").innerHTML = sections.map(([title, keys], index) => `
+    <details class="advanced-section" ${index < 2 ? "open" : ""}>
+      <summary>${title}</summary>
+      <div class="advanced-section-grid">
+        ${keys.map(renderAdvancedField).join("")}
+      </div>
+    </details>
+  `).join("");
+  updateAutoSmuRangeFields();
+  const autoInput = document.querySelector('[data-advanced="auto_smu_range"]');
+  if (autoInput) autoInput.addEventListener("change", updateAutoSmuRangeFields);
+}
+
+function renderAdvancedField(key) {
     if (key === "test_speed") {
       const currentSpeed = settings.test_speed || "Medium";
       return `<label>test speed<select data-advanced="test_speed">${["Medium", "Fast", "Slow"].map(speed => `<option ${speed === currentSpeed ? "selected" : ""}>${speed}</option>`).join("")}</select></label>`;
     }
+    if (key === "operating_point_mode") {
+      const currentMode = settings.operating_point_mode || "MPP_SEARCH";
+      return `<label>operating point mode<select data-advanced="operating_point_mode">${["MPP_SEARCH", "MANUAL_SMU_VOLTAGE"].map(mode => `<option ${mode === currentMode ? "selected" : ""}>${mode}</option>`).join("")}</select></label>`;
+    }
+    if (key === "capacitance_unit") {
+      const currentUnit = settings.capacitance_unit || "uF";
+      return `<label>capacitance unit<select data-advanced="capacitance_unit">${["F", "mF", "uF", "nF"].map(unit => `<option ${unit === currentUnit ? "selected" : ""}>${unit}</option>`).join("")}</select></label>`;
+    }
     const value = settings[key];
     const type = typeof value === "boolean" ? "checkbox" : "text";
     const checked = value === true ? "checked" : "";
-    return `<label>${key.replaceAll("_", " ")}<input data-advanced="${key}" type="${type}" value="${value}" ${checked}></label>`;
-  }).join("");
+    const displayValue = isGpibAddressKey(key) ? shortGpibAddress(value) : value;
+    const inputType = isGpibAddressKey(key) ? "number" : type;
+    return `<label>${key.replaceAll("_", " ")}<input data-advanced="${key}" type="${inputType}" value="${displayValue}" ${checked}></label>`;
 }
 
 function collectAdvanced() {
   document.querySelectorAll("[data-advanced]").forEach(input => {
-    settings[input.dataset.advanced] = input.type === "checkbox" ? input.checked : input.value;
+    const key = input.dataset.advanced;
+    if (isGpibAddressKey(key)) {
+      settings[key] = expandGpibAddress(input.value);
+    } else {
+      settings[key] = input.type === "checkbox" ? input.checked : input.value;
+    }
   });
+}
+
+function updateAutoSmuRangeFields() {
+  const autoInput = document.querySelector('[data-advanced="auto_smu_range"]');
+  const isAuto = autoInput ? autoInput.checked : Boolean(settings.auto_smu_range);
+  ["smu_start_v", "smu_stop_v"].forEach(key => {
+    const input = document.querySelector(`[data-advanced="${key}"]`);
+    if (!input) return;
+    input.disabled = isAuto;
+    input.closest("label")?.classList.toggle("disabled-field", isAuto);
+  });
+}
+
+function isGpibAddressKey(key) {
+  return ["dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr"].includes(key);
+}
+
+function shortGpibAddress(value) {
+  const match = String(value ?? "").match(/GPIB\d*::(\d+)::INSTR/i);
+  return match ? match[1] : String(value ?? "");
+}
+
+function expandGpibAddress(value) {
+  const text = String(value ?? "").trim();
+  if (/^GPIB/i.test(text)) return text;
+  return `GPIB0::${text}::INSTR`;
 }
 
 function collectPayload() {
@@ -254,6 +317,11 @@ function collectPayload() {
   return payload;
 }
 
+function openRunningModal() {
+  $("resumeRunningButton").hidden = currentStatus.mode === "smu_calibration";
+  $("runningModal").showModal();
+}
+
 async function startMeasurement() {
   const payload = collectPayload();
   const response = await fetch("/api/start", {
@@ -264,7 +332,7 @@ async function startMeasurement() {
   const data = await response.json();
   if (response.status === 409) {
     pendingStartPayload = payload;
-    $("runningModal").showModal();
+    openRunningModal();
     return;
   }
   if (!data.ok) {
@@ -313,6 +381,26 @@ async function stopCurrentAndStartPending() {
   }
 }
 
+async function calibrateSmuRange() {
+  const payload = collectPayload();
+  const response = await fetch("/api/calibrate-smu", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (response.status === 409) {
+    pendingStartPayload = null;
+    openRunningModal();
+    return;
+  }
+  if (!data.ok) {
+    $("statusText").textContent = data.error || "Could not start SMU calibration.";
+    return;
+  }
+  startPolling();
+}
+
 async function applyLiveControl() {
   const payload = {};
   const smu = Number($("liveSmuVoltage").value);
@@ -338,8 +426,17 @@ async function refreshStatus() {
   const response = await fetch("/api/status");
   currentStatus = await response.json();
   $("statusText").textContent = `${currentStatus.status} ${currentStatus.mode ? " - " + currentStatus.mode : ""}`;
-  $("resumeButton").hidden = currentStatus.status !== "running";
+  $("resumeButton").hidden = currentStatus.status !== "running" || currentStatus.mode === "smu_calibration";
+  $("resumeRunningButton").hidden = currentStatus.mode === "smu_calibration";
   $("stopButton").hidden = currentStatus.status !== "running";
+  $("calibrateSmuButton").hidden = currentStatus.status === "running";
+  $("calibrateSmuButton").textContent = currentStatus.smu_calibration?.smu_start_v
+    ? "Recalibrate for solar cell"
+    : "Calibrate for solar cell";
+  if (currentStatus.smu_calibration?.smu_start_v) {
+    settings.smu_start_v = currentStatus.smu_calibration.smu_start_v;
+    settings.smu_stop_v = currentStatus.smu_calibration.smu_stop_v;
+  }
   if (currentStatus.status === "failed") {
     $("statusText").textContent = currentStatus.short_error || "Measurement failed.";
   }
@@ -353,7 +450,9 @@ function buildPlotConfig() {
   const count = $("plotCount");
   count.innerHTML = "";
   for (let i = 1; i <= 8; i++) count.append(new Option(String(i), String(i)));
-  count.value = "2";
+  if (selectedMode === "frequency_sweep") count.value = "4";
+  else if (selectedMode === "standard_dc") count.value = "2";
+  else count.value = "1";
   renderPlotConfig();
 }
 
@@ -373,7 +472,7 @@ function allVariableOptions() {
   }
   const mode = variableOptionsByMode[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
   (variableOptionsByMode[mode] || []).forEach(([label, value]) => add(label, value));
-  Object.values(vars).forEach(list => list.forEach(v => add(v, v)));
+  if (!variableOptionsByMode[mode]) Object.values(vars).forEach(list => list.forEach(v => add(v, v)));
   if (!options.length && modes[mode]) modes[mode].vars.forEach(v => add(v, v));
   return options;
 }
@@ -386,6 +485,10 @@ function updatePlotCardVisibility(card) {
   const isCustom = card.querySelector('[data-plot-field="type"]').value === "custom";
   card.querySelector(".default-fields").hidden = isCustom;
   card.querySelector(".custom-fields").hidden = !isCustom;
+  const defaultId = card.querySelector('[data-plot-field="default"]')?.value;
+  const selectedDefault = availableDefaults().find(p => p.id === defaultId);
+  const targetField = card.querySelector(".target-vdc-field");
+  if (targetField) targetField.hidden = isCustom || !selectedDefault?.needsTargetVdc;
 }
 
 function renderPlotConfig() {
@@ -404,6 +507,7 @@ function renderPlotConfig() {
       <label>Type<select data-plot-field="type"><option value="default">Default</option><option value="custom">Custom</option></select></label>
       <div class="default-fields">
         <label>Default<select data-plot-field="default">${defaults.map(x => `<option value="${x.id}">${x.label}</option>`).join("")}</select></label>
+        <label class="target-vdc-field">Target Vdc_pv [V]<input data-plot-field="targetVdc" type="number" step="0.001" placeholder="closest measured"></label>
       </div>
       <div class="custom-fields">
         <label>X-axis<select data-plot-field="x">${optionsHtml(vars)}</select></label>
@@ -413,6 +517,7 @@ function renderPlotConfig() {
       </div>`;
     card.querySelector('[data-plot-field="default"]').value = d.id || "";
     card.querySelector('[data-plot-field="type"]').addEventListener("change", () => updatePlotCardVisibility(card));
+    card.querySelector('[data-plot-field="default"]').addEventListener("change", () => updatePlotCardVisibility(card));
     updatePlotCardVisibility(card);
     host.appendChild(card);
   }
@@ -423,9 +528,16 @@ function readPlotConfigs() {
     const get = field => card.querySelector(`[data-plot-field="${field}"]`).value;
     const type = get("type");
     if (type === "default") {
-      return availableDefaults().find(p => p.id === get("default")) || {};
+      const cfg = { ...(availableDefaults().find(p => p.id === get("default")) || {}) };
+      const targetInput = card.querySelector('[data-plot-field="targetVdc"]');
+      if (targetInput && targetInput.value !== "") cfg.targetVdc = Number(targetInput.value);
+      return cfg;
     }
-    return { label: `${get("y")} vs ${get("x")}`, x: get("x"), y: get("y"), xScale: get("xScale"), yScale: get("yScale"), custom: true };
+    const xSelect = card.querySelector('[data-plot-field="x"]');
+    const ySelect = card.querySelector('[data-plot-field="y"]');
+    const xLabel = xSelect.selectedOptions[0]?.textContent || get("x");
+    const yLabel = ySelect.selectedOptions[0]?.textContent || get("y");
+    return { label: `${yLabel} over ${xLabel}`, x: get("x"), y: get("y"), xLabel, yLabel, xScale: get("xScale"), yScale: get("yScale"), custom: true };
   });
 }
 
@@ -445,13 +557,78 @@ async function loadResults() {
   const response = await fetch("/api/results");
   const data = await response.json();
   showScreen("screen3");
-  $("metadata").textContent = `Status: ${data.status}. Datasets: ${Object.entries(data.datasets || {}).map(([k, v]) => `${k} (${v.length})`).join(", ")}`;
+  $("metadata").innerHTML = renderResultsMetadata(data.datasets || {}, data.status);
   drawPlots(data.datasets || {});
 }
 
+function displayNumber(value, digits = 6) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  return Number(number.toPrecision(digits)).toString();
+}
+
+function renderResultsMetadata(datasets, status) {
+  const datasetText = Object.entries(datasets).map(([k, v]) => `${k} (${v.length})`).join(", ");
+  let html = `<div>Status: ${status}. Datasets: ${datasetText}</div>`;
+  const mode = window.DEFAULT_PLOTS[selectedMode] ? selectedMode : currentStatus.mode;
+  const row = frequencyOperatingPointRow(datasets);
+  if (mode === "frequency_sweep" && row) {
+    const values = {
+      Vdc_pv: firstValue(row, ["operating_point_reference_Vdc_pv_V", "final_Vdc_pv", "mpp_search_Vdc_pv_V", "Vdc_pv", "Vdc_pv_V"]),
+      Idc_pv: firstValue(row, ["operating_point_reference_Idc_pv_A", "final_Idc_pv", "mpp_search_Idc_pv_A", "Idc_pv", "Idc_pv_A"]),
+      Pdc_pv: firstValue(row, ["operating_point_reference_Pdc_pv_W", "final_Pdc_pv", "mpp_search_Pdc_pv_W", "Pdc_pv", "Pdc_pv_W"]),
+      V_SMU: firstValue(row, ["operating_point_smu_voltage_V", "final_V_SMU", "mpp_smu_voltage_V", "V_SMU", "smu_voltage_V"])
+    };
+    html += `<table><thead><tr><th>Final Vdc_pv [V]</th><th>Final Idc_pv [A]</th><th>Final Pdc_pv [W]</th><th>Final V_SMU [V]</th></tr></thead>
+      <tbody><tr><td>${displayNumber(values.Vdc_pv)}</td><td>${displayNumber(values.Idc_pv)}</td><td>${displayNumber(values.Pdc_pv)}</td><td>${displayNumber(values.V_SMU)}</td></tr></tbody></table>`;
+  }
+  return html;
+}
+
+function firstValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== "") return row[key];
+  }
+  return "";
+}
+
+function frequencyOperatingPointRow(datasets) {
+  if (datasets.frequency_sweep?.length) {
+    return datasets.frequency_sweep[0];
+  }
+  const rows = datasets.frequency_dc || [];
+  const candidates = rows.filter(row => {
+    const idc = Number(resolveValue(row, "Idc_pv"));
+    const pdc = Number(resolveValue(row, "Pdc_pv"));
+    return Number.isFinite(idc) && Number.isFinite(pdc) && idc >= 0;
+  });
+  if (candidates.length) {
+    return candidates.reduce((best, row) => Number(resolveValue(row, "Pdc_pv")) > Number(resolveValue(best, "Pdc_pv")) ? row : best);
+  }
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
 function rowsForPlot(datasets, cfg) {
-  if (cfg.dataset && datasets[cfg.dataset]) return datasets[cfg.dataset];
-  return Object.values(datasets).find(rows => rows.some(row => hasValue(row, cfg.x) && hasValue(row, cfg.y))) || [];
+  let rows = cfg.dataset && datasets[cfg.dataset]
+    ? datasets[cfg.dataset]
+    : (Object.values(datasets).find(items => items.some(row => hasValue(row, cfg.x) && hasValue(row, cfg.y))) || []);
+  if (cfg.needsTargetVdc && Number.isFinite(cfg.targetVdc)) {
+    const candidates = rows
+      .map(row => ({
+        row,
+        v: Number(resolveValue(row, "Vdc_pv")),
+        group: row.sweep_index ?? row.smu_voltage_V ?? row.V_SMU ?? row.smu_voltage
+      }))
+      .filter(item => Number.isFinite(item.v));
+    if (candidates.length) {
+      const closest = candidates.reduce((best, item) => Math.abs(item.v - cfg.targetVdc) < Math.abs(best.v - cfg.targetVdc) ? item : best);
+      cfg.actualVdc = closest.v;
+      rows = candidates
+        .filter(item => item.group !== undefined ? String(item.group) === String(closest.group) : Math.abs(item.v - closest.v) <= 1e-9)
+        .map(item => item.row);
+    }
+  }
+  return rows;
 }
 
 function drawPlots(datasets) {
@@ -460,9 +637,11 @@ function drawPlots(datasets) {
   plotConfigs.forEach(cfg => {
     const panel = document.createElement("div");
     panel.className = "plot-panel";
-    panel.innerHTML = `<h2>${cfg.label || "Plot"}</h2><canvas width="560" height="360"></canvas>`;
+    const rows = rowsForPlot(datasets, cfg);
+    const suffix = cfg.actualVdc !== undefined ? ` closest Vdc_pv=${Number(cfg.actualVdc).toPrecision(4)} V` : "";
+    panel.innerHTML = `<h2>${cfg.label || "Plot"}${suffix}</h2><canvas width="560" height="360"></canvas>`;
     host.appendChild(panel);
-    drawChart(panel.querySelector("canvas"), rowsForPlot(datasets, cfg), cfg);
+    drawChart(panel.querySelector("canvas"), rows, cfg);
   });
 }
 
@@ -511,6 +690,28 @@ function niceTicks(min, max, count = 5) {
   const ticks = [];
   for (let value = start; value <= max + step * 0.5; value += step) ticks.push(value);
   return ticks.slice(0, count + 2);
+}
+
+function axisRange(values, forcedMin, isLog = false) {
+  let dataMin = Math.min(...values);
+  let dataMax = Math.max(...values);
+  let min = dataMin;
+  let max = dataMax;
+  if (forcedMin !== undefined) {
+    const forced = Number(forcedMin);
+    min = isLog ? Math.log10(forced || Math.min(...values.filter(v => v > 0))) : forced;
+  }
+  if (!Number.isFinite(min)) min = dataMin;
+  if (!Number.isFinite(max)) max = dataMax;
+  const span = max - dataMin;
+  if (forcedMin !== undefined && !isLog && min === 0 && dataMin > 0 && span > 0 && dataMin / Math.max(max, 1e-30) > 0.55) {
+    min = Math.max(0, dataMin - span * 0.12);
+    return { min, max: max + span * 0.08, axisBreakAtZero: true };
+  }
+  const range = max - min;
+  if (range > 0) max += range * 0.06;
+  if (max <= min) max = min + Math.abs(min || 1);
+  return { min, max, axisBreakAtZero: false };
 }
 
 function formatTick(value, isLog = false) {
@@ -562,14 +763,10 @@ function drawChart(canvas, rows, cfg) {
   const tx = v => logX ? Math.log10(v) : v;
   const ty = v => logY ? Math.log10(v) : v;
   const xVals = xs.map(tx), yVals = ys.map(ty);
-  let minX = Math.min(...xVals), maxX = Math.max(...xVals);
-  let minY = Math.min(...yVals), maxY = Math.max(...yVals);
-  if (cfg.xMin !== undefined) minX = logX ? Math.log10(Number(cfg.xMin) || Math.min(...xs.filter(v => v > 0))) : Number(cfg.xMin);
-  if (cfg.yMin !== undefined) minY = logY ? Math.log10(Number(cfg.yMin) || Math.min(...ys.filter(v => v > 0))) : Number(cfg.yMin);
-  if (!Number.isFinite(minX)) minX = Math.min(...xVals);
-  if (!Number.isFinite(minY)) minY = Math.min(...yVals);
-  if (maxX <= minX) maxX = minX + Math.abs(minX || 1);
-  if (maxY <= minY) maxY = minY + Math.abs(minY || 1);
+  const xRange = axisRange(xVals, cfg.xMin, logX);
+  const yRange = axisRange(yVals, cfg.yMin, logY);
+  let minX = xRange.min, maxX = xRange.max;
+  let minY = yRange.min, maxY = yRange.max;
   const plotWidth = canvas.width - padLeft - padRight;
   const plotHeight = canvas.height - padTop - padBottom;
   const sx = v => padLeft + ((tx(v) - minX) / ((maxX - minX) || 1)) * plotWidth;
@@ -577,12 +774,14 @@ function drawChart(canvas, rows, cfg) {
 
   ctx.font = "11px Segoe UI";
   ctx.textBaseline = "middle";
-  const xTicks = niceTicks(minX, maxX, 6);
+  let xTicks = niceTicks(minX, maxX, 6);
+  if (xRange.axisBreakAtZero) xTicks = [0, ...xTicks.filter(tick => tick > minX + 1e-12)];
   const yTicks = niceTicks(minY, maxY, 6);
   ctx.strokeStyle = "#edf0f4";
   ctx.fillStyle = "#647181";
   ctx.lineWidth = 1;
   xTicks.forEach(tick => {
+    if (xRange.axisBreakAtZero && tick === 0) return;
     const x = padLeft + ((tick - minX) / ((maxX - minX) || 1)) * plotWidth;
     ctx.beginPath();
     ctx.moveTo(x, padTop);
@@ -608,6 +807,18 @@ function drawChart(canvas, rows, cfg) {
   ctx.lineTo(padLeft, padTop + plotHeight);
   ctx.lineTo(padLeft + plotWidth, padTop + plotHeight);
   ctx.stroke();
+  if (xRange.axisBreakAtZero) {
+    ctx.strokeStyle = "#9aa5b1";
+    ctx.beginPath();
+    ctx.moveTo(padLeft + 10, padTop + plotHeight - 8);
+    ctx.lineTo(padLeft + 18, padTop + plotHeight + 4);
+    ctx.moveTo(padLeft + 18, padTop + plotHeight - 8);
+    ctx.lineTo(padLeft + 26, padTop + plotHeight + 4);
+    ctx.stroke();
+    ctx.fillStyle = "#647181";
+    ctx.textAlign = "center";
+    ctx.fillText("0", padLeft, canvas.height - padBottom + 22);
+  }
 
   ctx.save();
   ctx.beginPath();
@@ -632,11 +843,11 @@ function drawChart(canvas, rows, cfg) {
   ctx.fillStyle = "#18202a";
   ctx.font = "12px Segoe UI";
   ctx.textAlign = "center";
-  ctx.fillText(`${cfg.x || ""}${logX ? " (log)" : ""}`, padLeft + plotWidth / 2, canvas.height - 18);
+  ctx.fillText(`${cfg.xLabel || cfg.x || ""}${logX ? " (log)" : ""}`, padLeft + plotWidth / 2, canvas.height - 18);
   ctx.save();
   ctx.translate(16, padTop + plotHeight / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillText(`${cfg.y || ""}${logY ? " (log)" : ""}`, 0, 0);
+  ctx.fillText(`${cfg.yLabel || cfg.y || ""}${logY ? " (log)" : ""}`, 0, 0);
   ctx.restore();
 }
 
@@ -815,6 +1026,7 @@ $("backToPlots").addEventListener("click", () => showScreen("screen2"));
 $("newRun").addEventListener("click", () => showScreen("screen1"));
 $("plotCount").addEventListener("change", renderPlotConfig);
 $("stopButton").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
+$("calibrateSmuButton").addEventListener("click", calibrateSmuRange);
 $("applyLiveControl").addEventListener("click", applyLiveControl);
 $("resumeButton").addEventListener("click", resumeRunningMeasurement);
 $("resumeRunningButton").addEventListener("click", () => {

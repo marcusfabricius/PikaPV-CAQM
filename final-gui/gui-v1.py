@@ -263,6 +263,7 @@ class Settings:
     simulation_mode: bool = False
 
     # SMU and DC sweep
+    auto_smu_range: bool = True
     smu_start_v: float = 11.0
     smu_stop_v: float = 15.0
     smu_step_v: float = 0.05
@@ -711,6 +712,170 @@ class MeasurementEngine:
             total_s += n_voltage * n_freq * level.repeats * per_freq_s
             estimates[name] = format_duration(total_s)
         return estimates
+
+    def run_smu_range_calibration(self) -> RunResult:
+        self.validate()
+        output_dir = self.settings.output_dir
+        ensure_dir(output_dir)
+        timestamp = now_tag()
+        rows: List[Dict[str, Any]] = []
+        session = VisaController(self.settings, self.log)
+
+        def measure_at(smu_v: float, phase: str, step_v: float) -> Dict[str, Any]:
+            self.check_stop()
+            vdc, idc, idc_raw = session.set_smu_voltage_and_read_dc(smu_v, wait_s=0.15)
+            row = {
+                "timestamp": iso_now(),
+                "phase": phase,
+                "step_v": step_v,
+                "smu_voltage_V": smu_v,
+                "Vdc_pv_V": vdc,
+                "Idc_adc1_raw": idc_raw,
+                "Idc_pv_A": idc,
+                "Pdc_pv_W": vdc * idc,
+            }
+            rows.append(row)
+            self.log(f"Calibrate {phase} | SMU={smu_v:.6g} V | Vdc={vdc:.6e} V | Idc={idc:.6e} A")
+            return row
+
+        def scan_boundary(
+            start_v: float,
+            stop_v: float,
+            step_v: float,
+            predicate: Callable[[Dict[str, Any]], bool],
+            phase: str,
+        ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+            previous: Optional[Dict[str, Any]] = None
+            found: Optional[Dict[str, Any]] = None
+            for smu_v in linear_points(start_v, stop_v, step_v):
+                row = measure_at(smu_v, phase, step_v)
+                if predicate(row):
+                    found = row
+                    break
+                previous = row
+            return previous, found
+
+        def refine_boundary(
+            low_v: float,
+            high_v: float,
+            predicate: Callable[[Dict[str, Any]], bool],
+            label: str,
+        ) -> Dict[str, Any]:
+            step_v = max((high_v - low_v) / 5.0, 0.005)
+            best: Optional[Dict[str, Any]] = None
+            low = low_v
+            high = high_v
+            while step_v > 0.005 + 1e-12:
+                before, found = scan_boundary(low, high, step_v, predicate, label)
+                if found is None:
+                    low = before["smu_voltage_V"] if before else low
+                    high = min(self.settings.smu_stop_v, high + step_v)
+                else:
+                    best = found
+                    low = before["smu_voltage_V"] if before else low
+                    high = found["smu_voltage_V"]
+                step_v = max(step_v / 5.0, 0.005)
+            before, found = scan_boundary(low, high, 0.005, predicate, f"{label}_final")
+            if found is not None:
+                best = found
+            if best is None:
+                raise StopMeasurement(f"Calibration could not find {label} boundary.")
+            return best
+
+        def verify_or_find_forward(
+            row: Dict[str, Any],
+            predicate: Callable[[Dict[str, Any]], bool],
+            label: str,
+            search_stop_v: float,
+        ) -> Dict[str, Any]:
+            check = measure_at(row["smu_voltage_V"], f"check_{label}", 0.005)
+            if predicate(check):
+                return check
+            self.log(
+                f"Calibration verification at {row['smu_voltage_V']:.6g} V did not pass for {label}. "
+                "Scanning forward in 5 mV steps."
+            )
+            start_v = min(row["smu_voltage_V"] + 0.005, search_stop_v)
+            for smu_v in linear_points(start_v, search_stop_v, 0.005):
+                candidate = measure_at(smu_v, f"verify_{label}", 0.005)
+                if predicate(candidate):
+                    check_candidate = measure_at(smu_v, f"check_{label}", 0.005)
+                    if predicate(check_candidate):
+                        return check_candidate
+            raise StopMeasurement(f"Calibration verification failed: could not verify {label}.")
+
+        try:
+            session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=True, need_smu=True)
+            session.configure_dmm()
+            session.configure_fg(self.settings.freq_start_hz)
+            session.configure_smu(self.settings.smu_start_v)
+            span = max(0.005, self.settings.smu_stop_v - self.settings.smu_start_v)
+            coarse_step = max(0.5, span / 8.0)
+            self.log("Starting automatic SMU range calibration for solar cell...")
+
+            positive_predicate = lambda row: row["Vdc_pv_V"] >= self.settings.vdc_positive_threshold_v
+            negative_predicate = lambda row: row["Idc_pv_A"] < self.settings.negative_idc_limit_a
+
+            before_pos, first_pos = scan_boundary(
+                self.settings.smu_start_v,
+                self.settings.smu_stop_v,
+                coarse_step,
+                positive_predicate,
+                "coarse_positive_vdc",
+            )
+            if first_pos is None:
+                raise StopMeasurement("Calibration could not find a positive Vdc_pv point.")
+            start_low = before_pos["smu_voltage_V"] if before_pos else self.settings.smu_start_v
+            start_row = refine_boundary(start_low, first_pos["smu_voltage_V"], positive_predicate, "positive_vdc")
+
+            before_neg, first_neg = scan_boundary(
+                start_row["smu_voltage_V"],
+                self.settings.smu_stop_v,
+                coarse_step,
+                negative_predicate,
+                "coarse_negative_idc",
+            )
+            if first_neg is None:
+                raise StopMeasurement("Calibration could not find where Idc_pv becomes negative.")
+            stop_low = before_neg["smu_voltage_V"] if before_neg else start_row["smu_voltage_V"]
+            stop_row = refine_boundary(stop_low, first_neg["smu_voltage_V"], negative_predicate, "negative_idc")
+
+            check_start = verify_or_find_forward(
+                start_row,
+                positive_predicate,
+                "positive_vdc",
+                min(self.settings.smu_stop_v, start_row["smu_voltage_V"] + 0.10),
+            )
+            check_stop = verify_or_find_forward(
+                stop_row,
+                negative_predicate,
+                "negative_idc",
+                min(self.settings.smu_stop_v, max(first_neg["smu_voltage_V"], stop_row["smu_voltage_V"] + 0.10)),
+            )
+
+            calibrated_start = round(check_start["smu_voltage_V"], 6)
+            calibrated_stop = round(check_stop["smu_voltage_V"], 6)
+            csv_path = output_dir / f"smu_range_calibration_{timestamp}.csv"
+            save_rows(rows, csv_path)
+            self.log(
+                f"Calibration finished | SMU start={calibrated_start:.6g} V | "
+                f"SMU stop={calibrated_stop:.6g} V | calibration precision=0.005 V"
+            )
+            return RunResult(
+                datasets={"smu_range_calibration": rows},
+                output_files=[csv_path],
+                summary={
+                    "smu_start_v": calibrated_start,
+                    "smu_stop_v": calibrated_stop,
+                    "positive_vdc_row": check_start,
+                    "negative_idc_row": check_stop,
+                },
+            )
+        finally:
+            try:
+                session.shutdown_outputs()
+            finally:
+                session.close()
 
     def run_pre_scan(self) -> RunResult:
         self.validate()
