@@ -11,6 +11,7 @@ advanced_settings:
   lockin_i_addr: 15
   lockin_v_addr: 12
   fg_addr: 14
+  led_fg_addr: 11
   smu_addr: 26
 
   # Output and simulation
@@ -48,10 +49,10 @@ advanced_settings:
   fg_waveform: SIN
   freq_start_hz: 5.0
   freq_stop_hz: 10000.0
-  settling_after_smu_s: 1.0
-  settling_after_freq_s: 4.0
-  lockin_time_constant_wait_s: 0.0
   min_iac_mag_a: 0.000000000001
+
+  # LED modulation function generator
+  led_duty_cycle_percent: 99.0
 
   # Outlier handling
   remeasure_z_real_outliers: true
@@ -61,6 +62,7 @@ advanced_settings:
   abort_if_outlier_retries_exhausted: false
 
   # Phasor sign handling
+  iac_measurement_sign: 1.0
   invert_current_phasor: false
   invert_voltage_phasor: false
 
@@ -79,6 +81,7 @@ advanced_settings:
 
   # Plotting
   capacitance_unit: uF
+  nyquist_y_axis_sign: -1.0
 
   # Intentional lab behavior: outputs stay on after runs.
   turn_off_smu_at_end: false

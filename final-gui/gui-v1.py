@@ -243,12 +243,14 @@ class SpeedLevel:
 
 
 SPEED_LEVELS: Dict[str, SpeedLevel] = {
-    "Fast": SpeedLevel("Fast", points_per_decade=2, repeats=1, settling_multiplier=0.65),
+    "Custom": SpeedLevel("Custom", points_per_decade=4, repeats=2, settling_multiplier=1.0),
+    "Fast": SpeedLevel("Fast", points_per_decade=2, repeats=1, settling_multiplier=1.0),
     "Medium": SpeedLevel("Medium", points_per_decade=4, repeats=2, settling_multiplier=1.0),
-    "Slow": SpeedLevel("Slow", points_per_decade=8, repeats=4, settling_multiplier=1.4),
+    "Slow": SpeedLevel("Slow", points_per_decade=8, repeats=4, settling_multiplier=1.0),
 }
 
 AUTO_VDC_STEP_BY_SPEED: Dict[str, float] = {
+    "Custom": 0.025,
     "Fast": 0.05,
     "Medium": 0.025,
     "Slow": 0.01,
@@ -264,6 +266,7 @@ class Settings:
     lockin_i_addr: str = "GPIB0::15::INSTR"
     lockin_v_addr: str = "GPIB0::12::INSTR"
     fg_addr: str = "GPIB0::14::INSTR"
+    led_fg_addr: str = "GPIB0::11::INSTR"
     smu_addr: str = "GPIB0::26::INSTR"
 
     # Output
@@ -303,10 +306,14 @@ class Settings:
     fg_waveform: str = "SIN"
     freq_start_hz: float = 5.0
     freq_stop_hz: float = 10000.0
+    custom_vdc_pv_step_size_v: float = 0.025
     settling_after_smu_s: float = 1.0
     settling_after_freq_s: float = 4.0
     lockin_time_constant_wait_s: float = 0.0
     min_iac_mag_a: float = 1e-12
+
+    # LED modulation function generator
+    led_duty_cycle_percent: float = 50.0
 
     # Outlier handling
     remeasure_z_real_outliers: bool = True
@@ -316,6 +323,7 @@ class Settings:
     abort_if_outlier_retries_exhausted: bool = False
 
     # Phasor sign handling
+    iac_measurement_sign: float = -1.0
     invert_current_phasor: bool = False
     invert_voltage_phasor: bool = False
 
@@ -329,6 +337,7 @@ class Settings:
 
     # Plotting
     capacitance_unit: str = "uF"
+    nyquist_y_axis_sign: float = 1.0
 
     # Output shutdown
     turn_off_smu_at_end: bool = False
@@ -440,6 +449,8 @@ class FakeResourceManager:
             return FakeInstrument("lockin_i", self.state)
         if "14" in address:
             return FakeInstrument("fg", self.state)
+        if "11" in address:
+            return FakeInstrument("led_fg", self.state)
         return FakeInstrument("smu", self.state)
 
     def list_resources(self) -> Tuple[str, ...]:
@@ -447,6 +458,7 @@ class FakeResourceManager:
             "GPIB0::10::INSTR",
             "GPIB0::12::INSTR",
             "GPIB0::14::INSTR",
+            "GPIB0::11::INSTR",
             "GPIB0::15::INSTR",
             "GPIB0::26::INSTR",
         )
@@ -469,9 +481,10 @@ class VisaController:
         self.lockin_i: Any = None
         self.lockin_v: Any = None
         self.fg: Any = None
+        self.led_fg: Any = None
         self.smu: Any = None
 
-    def open(self, need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True) -> None:
+    def open(self, need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True, need_led_fg=True) -> None:
         if self.settings.simulation_mode:
             self.rm = FakeResourceManager()
             self.log("Simulation mode is ON. No hardware will be controlled.")
@@ -493,10 +506,12 @@ class VisaController:
             self.lockin_v = self.rm.open_resource(self.settings.lockin_v_addr)
         if need_fg:
             self.fg = self.rm.open_resource(self.settings.fg_addr)
+        if need_led_fg:
+            self.led_fg = self.rm.open_resource(self.settings.led_fg_addr)
         if need_smu:
             self.smu = self.rm.open_resource(self.settings.smu_addr)
 
-        for inst in [self.dmm, self.lockin_i, self.lockin_v, self.fg, self.smu]:
+        for inst in [self.dmm, self.lockin_i, self.lockin_v, self.fg, self.led_fg, self.smu]:
             if inst is None:
                 continue
             inst.timeout = 10000
@@ -511,7 +526,7 @@ class VisaController:
                 pass
 
     def close(self) -> None:
-        for inst in [self.dmm, self.lockin_i, self.lockin_v, self.fg, self.smu]:
+        for inst in [self.dmm, self.lockin_i, self.lockin_v, self.fg, self.led_fg, self.smu]:
             if inst is not None:
                 try:
                     inst.close()
@@ -523,11 +538,13 @@ class VisaController:
             except Exception:
                 pass
 
-    def safe_write(self, inst: Any, cmd: str, label: str) -> None:
+    def safe_write(self, inst: Any, cmd: str, label: str) -> bool:
         try:
             inst.write(cmd)
+            return True
         except Exception as exc:
             self.log(f"WARNING: {label} rejected command {cmd!r}: {exc}")
+            return False
 
     def strict_write(self, inst: Any, cmd: str, label: str) -> None:
         try:
@@ -582,17 +599,86 @@ class VisaController:
         self.strict_write(self.fg, f"FREQ {initial_freq_hz}", "Function generator")
         self.strict_write(self.fg, "OUTP ON", "Function generator")
 
+    def configure_led_fg(self) -> None:
+        if self.led_fg is None:
+            return
+        duty = min(99.0, max(1.0, float(self.settings.led_duty_cycle_percent)))
+        self.log(f"Configuring LED function generator, GPIB 11: pulse, 1 MHz, 5 Vpp, 2.5 V offset, duty={duty:.3g}%.")
+        commands = [
+            "SOUR1:FUNC:SHAP PULS",
+            "SOUR1:FREQ 1.0E6",
+            "SOUR1:VOLT:LEV:IMM:AMPL 5.0",
+            "SOUR1:VOLT:LEV:IMM:OFFS 2.5",
+            f"SOUR1:PULS:DCYC {duty}",
+            "OUTP1:STAT ON",
+        ]
+        old_timeout = getattr(self.led_fg, "timeout", None)
+        try:
+            self.led_fg.timeout = min(int(old_timeout or 10000), 2500)
+        except Exception:
+            old_timeout = None
+        try:
+            for cmd in commands:
+                self.strict_write(self.led_fg, cmd, "LED function generator")
+        finally:
+            if old_timeout is not None:
+                try:
+                    self.led_fg.timeout = old_timeout
+                except Exception:
+                    pass
+
+    def set_led_duty_cycle(self, duty_cycle_percent: float) -> None:
+        if self.led_fg is None:
+            return
+        duty = min(99.0, max(1.0, float(duty_cycle_percent)))
+        self.strict_write(self.led_fg, f"SOUR1:PULS:DCYC {duty}", "LED function generator")
+        self.strict_write(self.led_fg, "OUTP1:STAT ON", "LED function generator")
+
     def configure_lockins_for_impedance(self) -> None:
         if not self.settings.configure_lockins:
             return
+
+        def configure_channel(inst: Any, label: str, description: str, cmds: List[str]) -> None:
+            if inst is None:
+                return
+            self.log(description)
+            old_timeout = getattr(inst, "timeout", None)
+            try:
+                inst.timeout = min(int(old_timeout or 10000), 2500)
+            except Exception:
+                old_timeout = None
+            failures = 0
+            try:
+                for cmd in cmds:
+                    if not self.safe_write(inst, cmd, label):
+                        failures += 1
+                    if failures >= 2:
+                        raise RuntimeError(
+                            f"{label} is not responding during configuration. "
+                            "Check if all devices are turned on, booted correctly, connected to GPIB, "
+                            "and the solar cell setup is connected."
+                        )
+            finally:
+                if old_timeout is not None:
+                    try:
+                        inst.timeout = old_timeout
+                    except Exception:
+                        pass
+
         if self.lockin_v is not None:
-            self.log("Configuring lock-in voltage channel, GPIB 12, A-B differential...")
-            for cmd in ["IMODE 0", "VMODE 3", "IE 1", self.settings.lockin_sensitivity_cmd]:
-                self.safe_write(self.lockin_v, cmd, "Lock-in voltage")
+            configure_channel(
+                self.lockin_v,
+                "Lock-in voltage",
+                "Configuring lock-in voltage channel, GPIB 12, A-B differential...",
+                ["IMODE 0", "VMODE 3", "IE 1", self.settings.lockin_sensitivity_cmd],
+            )
         if self.lockin_i is not None:
-            self.log("Configuring lock-in current channel, GPIB 15, A input...")
-            for cmd in ["IMODE 0", "VMODE 1", "IE 1", self.settings.lockin_sensitivity_cmd]:
-                self.safe_write(self.lockin_i, cmd, "Lock-in current")
+            configure_channel(
+                self.lockin_i,
+                "Lock-in current",
+                "Configuring lock-in current channel, GPIB 15, A input...",
+                ["IMODE 0", "VMODE 1", "IE 1", self.settings.lockin_sensitivity_cmd],
+            )
 
     def set_smu_voltage(self, smu_voltage: float) -> None:
         if abs(smu_voltage) > self.settings.max_smu_v:
@@ -630,7 +716,7 @@ class VisaController:
     def read_ac_phasors(self) -> Dict[str, float]:
         iac_mag_raw = self.query_float(self.lockin_i, self.settings.iac_mag_cmd, "Lock-in current magnitude")
         iac_phase_raw = self.query_float(self.lockin_i, self.settings.iac_phase_cmd, "Lock-in current phase")
-        iac_mag, iac_phase = normalize_signed_phasor(iac_mag_raw, iac_phase_raw)
+        iac_mag, iac_phase = normalize_signed_phasor(iac_mag_raw * self.settings.iac_measurement_sign, iac_phase_raw)
         if self.settings.invert_current_phasor:
             iac_mag, iac_phase = invert_phasor(iac_mag, iac_phase)
 
@@ -655,6 +741,9 @@ class VisaController:
         if self.fg is not None:
             self.safe_write(self.fg, "OUTP ON", "Function generator")
             self.log("Function generator output left ON after run.")
+        if self.led_fg is not None:
+            self.safe_write(self.led_fg, "OUTP1:STAT ON", "LED function generator")
+            self.log("LED function generator output left ON after run.")
         if self.smu is not None:
             self.safe_write(self.smu, f"smua.source.levelv = {self.settings.smu_stop_v}", "SMU")
             self.safe_write(self.smu, "smua.source.output = smua.OUTPUT_ON", "SMU")
@@ -699,6 +788,12 @@ class MeasurementEngine:
             raise ValueError("IDC ADC1 to ampere scaling must be positive.")
         if self.settings.idc_measurement_sign not in (-1.0, 1.0):
             raise ValueError("IDC measurement sign must be +1 or -1.")
+        if self.settings.iac_measurement_sign not in (-1.0, 1.0):
+            raise ValueError("IAC measurement sign must be +1 or -1.")
+        if self.settings.nyquist_y_axis_sign not in (-1.0, 1.0):
+            raise ValueError("Nyquist Y-axis sign must be +1 or -1.")
+        if self.settings.custom_vdc_pv_step_size_v <= 0:
+            raise ValueError("Custom Vdc_pv step size must be positive.")
         if self.settings.max_outlier_retries < 0:
             raise ValueError("Maximum outlier retries must be zero or positive.")
         capacitance_scale_factor(self.settings.capacitance_unit)
@@ -707,6 +802,8 @@ class MeasurementEngine:
         return bool(self.settings.auto_smu_range and self.settings.auto_smu_step_by_speed)
 
     def target_vdc_step_for_speed(self, speed_name: str) -> float:
+        if speed_name == "Custom":
+            return float(self.settings.custom_vdc_pv_step_size_v)
         return AUTO_VDC_STEP_BY_SPEED.get(speed_name, AUTO_VDC_STEP_BY_SPEED["Medium"])
 
     def auto_smu_cache_key(self, speed_name: str, start_v: float, stop_v: float) -> Tuple[str, float, float, float]:
@@ -894,7 +991,7 @@ class MeasurementEngine:
                 n_freq = 1
             else:
                 n_freq = len(logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade))
-            settle_freq = self.settings.settling_after_freq_s * level.settling_multiplier
+            settle_freq = self.settings.settling_after_freq_s
             per_freq_s = settle_freq + self.settings.lockin_time_constant_wait_s + 0.15
             total_s = pre_s + n_voltage * self.settings.settling_after_smu_s
             total_s += n_voltage * n_freq * level.repeats * per_freq_s
@@ -998,6 +1095,7 @@ class MeasurementEngine:
             session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=True, need_smu=True)
             session.configure_dmm()
             session.configure_fg(self.settings.freq_start_hz)
+            session.configure_led_fg()
             session.configure_smu(self.settings.smu_start_v)
             span = max(0.005, self.settings.smu_stop_v - self.settings.smu_start_v)
             coarse_step = max(0.5, span / 8.0)
@@ -1084,6 +1182,7 @@ class MeasurementEngine:
             session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=True, need_smu=True)
             session.configure_dmm()
             session.configure_fg(self.settings.freq_start_hz)
+            session.configure_led_fg()
             session.configure_smu(self.settings.smu_start_v)
 
             points = linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.pre_scan_step_v)
@@ -1164,6 +1263,7 @@ class MeasurementEngine:
             session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=False, need_fg=True, need_smu=True)
             session.configure_dmm()
             session.configure_fg(self.settings.freq_start_hz)
+            session.configure_led_fg()
             session.configure_smu(self.settings.smu_start_v)
 
             self.log("Starting IV/PV voltage sweep...")
@@ -1392,7 +1492,7 @@ class MeasurementEngine:
             freqs = [self.settings.freq_start_hz]
         else:
             freqs = logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade)
-        settling_s = self.settings.settling_after_freq_s * level.settling_multiplier
+        settling_s = self.settings.settling_after_freq_s
         cv_repeats = 1
         all_rows: List[Dict[str, Any]] = []
         cv_rows: List[Dict[str, Any]] = []
@@ -1403,6 +1503,7 @@ class MeasurementEngine:
             session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True)
             session.configure_dmm()
             session.configure_fg(freqs[0])
+            session.configure_led_fg()
             session.configure_smu(self.settings.smu_start_v)
             session.configure_lockins_for_impedance()
 
@@ -1609,7 +1710,7 @@ class MeasurementEngine:
         ensure_dir(output_dir)
         timestamp = now_tag()
         freqs = logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade)
-        settling_s = self.settings.settling_after_freq_s * level.settling_multiplier
+        settling_s = self.settings.settling_after_freq_s
         dc_rows: List[Dict[str, Any]] = []
         impedance_rows: List[Dict[str, Any]] = []
         rejected_rows: List[Dict[str, Any]] = []
@@ -1620,6 +1721,7 @@ class MeasurementEngine:
             session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True)
             session.configure_dmm()
             session.configure_fg(freqs[0])
+            session.configure_led_fg()
             session.configure_smu(initial_smu)
             session.configure_lockins_for_impedance()
             time.sleep(settling_s)
@@ -1733,6 +1835,7 @@ class MeasurementEngine:
             session.open(need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True)
             session.configure_dmm()
             session.configure_fg(self.settings.freq_start_hz)
+            session.configure_led_fg()
             session.configure_smu(self.settings.manual_smu_voltage_v)
             session.configure_lockins_for_impedance()
             self.log("Starting A-B differential live monitor. Press Stop to end.")
@@ -1741,12 +1844,14 @@ class MeasurementEngine:
             point_index = 0
             active_smu_voltage = self.settings.manual_smu_voltage_v
             active_fg_frequency = self.settings.freq_start_hz
+            active_led_duty = min(99.0, max(1.0, float(self.settings.led_duty_cycle_percent)))
             while not self.stop_event.is_set():
                 point_index += 1
                 t_s = time.time() - start
                 controls = self.live_control_getter() if self.live_control_getter else {}
                 requested_smu = controls.get("smu_voltage_v")
                 requested_freq = controls.get("fg_frequency_hz")
+                requested_led_duty = controls.get("led_duty_cycle_percent")
                 if requested_smu is not None and float(requested_smu) != active_smu_voltage:
                     active_smu_voltage = float(requested_smu)
                     session.set_smu_voltage(active_smu_voltage)
@@ -1755,6 +1860,10 @@ class MeasurementEngine:
                     active_fg_frequency = float(requested_freq)
                     session.strict_write(session.fg, f"FREQ {active_fg_frequency}", "Function generator")
                     self.log(f"Live monitor FG frequency set to {active_fg_frequency:.6g} Hz")
+                if requested_led_duty is not None and float(requested_led_duty) != active_led_duty:
+                    active_led_duty = min(99.0, max(1.0, float(requested_led_duty)))
+                    session.set_led_duty_cycle(active_led_duty)
+                    self.log(f"Live monitor LED brightness set to {active_led_duty:.3g}%")
 
                 vdc_pv, idc_pv, idc_raw = session.read_dc()
                 raw_v_value = session.query_float(session.lockin_v, "X.", "Lock-in 12 X")
@@ -1763,12 +1872,40 @@ class MeasurementEngine:
                 corrected_phase = wrap_phase_deg(raw_v_phase + 180.0)
                 current_value = session.query_float(session.lockin_i, "X.", "Lock-in 15 X")
                 current_phase = session.query_float(session.lockin_i, "PHA.", "Lock-in 15 phase")
+                cap_f = float("nan")
+                z_mag = float("nan")
+                z_phase = float("nan")
+                z_real = float("nan")
+                z_imag = float("nan")
+                try:
+                    live_vac_mag = abs(corrected_vpv)
+                    live_vac_phase = corrected_phase
+                    if self.settings.invert_voltage_phasor:
+                        live_vac_mag, live_vac_phase = invert_phasor(live_vac_mag, live_vac_phase)
+                    live_iac_mag, live_iac_phase = normalize_signed_phasor(
+                        current_value * self.settings.iac_measurement_sign,
+                        current_phase,
+                    )
+                    if self.settings.invert_current_phasor:
+                        live_iac_mag, live_iac_phase = invert_phasor(live_iac_mag, live_iac_phase)
+                    z_mag, z_phase, z_real, z_imag = impedance_from_mag_phase(
+                        live_vac_mag,
+                        live_vac_phase,
+                        live_iac_mag,
+                        live_iac_phase,
+                        self.settings.min_iac_mag_a,
+                    )
+                    cap_f, _, _ = capacitance_from_impedance(z_real, z_imag, active_fg_frequency)
+                except Exception as exc:
+                    self.log(f"Live capacitance unavailable: {exc}")
+                cap_scale, cap_unit = capacitance_scale_factor(self.settings.capacitance_unit)
                 row = {
                     "timestamp": iso_now(),
                     "point_index": point_index,
                     "time_s": t_s,
                     "smu_voltage_V": active_smu_voltage,
                     "fg_frequency_Hz": active_fg_frequency,
+                    "led_duty_cycle_percent": active_led_duty,
                     "Vpv_dc_V": vdc_pv,
                     "Idc_pv_A": idc_pv,
                     "Idc_adc1_raw": idc_raw,
@@ -1778,10 +1915,16 @@ class MeasurementEngine:
                     "lockin12_corrected_phase_deg": corrected_phase,
                     "lockin15_X_Vrms": current_value,
                     "lockin15_phase_deg": current_phase,
+                    "live_Z_magnitude_ohm": z_mag,
+                    "live_Z_phase_deg": z_phase,
+                    "live_Z_real_ohm": z_real,
+                    "live_Z_imag_ohm": z_imag,
+                    "live_capacitance_F": cap_f,
+                    f"live_capacitance_{cap_unit}": cap_f * cap_scale,
                 }
                 rows.append(row)
                 window.append(row)
-                self.log(f"A-B t={t_s:8.2f} s | Vpv_dc={vdc_pv:.6e} V | Vpv_ac={corrected_vpv:.6e} Vrms | phase={corrected_phase:8.3f} deg | Ipv_ac={current_value:.6e} Vrms | phase={current_phase:8.3f} deg")
+                self.log(f"A-B t={t_s:8.2f} s | Vpv_dc={vdc_pv:.6e} V | Vpv_ac={corrected_vpv:.6e} Vrms | phase={corrected_phase:8.3f} deg | Ipv_ac={current_value:.6e} Vrms | phase={current_phase:8.3f} deg | C={cap_f * cap_scale:.6g} {cap_unit}")
                 if self.live_callback:
                     self.live_callback("ab_live", list(window))
                 time.sleep(self.settings.ab_sample_interval_s)
@@ -1926,7 +2069,7 @@ class MeasureApp(tk.Tk):
             ("z_imag_plot", "Z'' over frequency"),
             ("z_mag_plot", "|Z| over frequency"),
             ("z_phase_plot", "Phase over frequency"),
-            ("nyquist_plot", "Nyquist impedance plot"),
+            ("nyquist_plot", "Nyquist plot"),
             ("cap_freq_plot", "Capacitance over frequency"),
             ("ab_live", "A-B differential live monitor"),
         ]
@@ -1937,8 +2080,8 @@ class MeasureApp(tk.Tk):
 
         speed_box = ttk.LabelFrame(scroll_frame, text="Test speed", padding=8)
         speed_box.pack(fill=tk.X, pady=4)
-        self.speed_var = tk.StringVar(value="Fast")
-        for name in ["Fast", "Medium", "Slow"]:
+        self.speed_var = tk.StringVar(value="Medium")
+        for name in ["Custom", "Fast", "Medium", "Slow"]:
             level = SPEED_LEVELS[name]
             ttk.Radiobutton(
                 speed_box,
@@ -1994,10 +2137,13 @@ class MeasureApp(tk.Tk):
         self._entry(freq_box, "Frequency start [Hz]", "freq_start_hz", 5.0)
         self._entry(freq_box, "Frequency stop [Hz]", "freq_stop_hz", 10000.0)
         self._entry(freq_box, "AC perturbation [Vpp]", "vac_vpp", 0.010)
+        self._entry(freq_box, "Custom Vdc_pv step [V]", "custom_vdc_pv_step_size_v", 0.025)
         self._entry(freq_box, "Settle after freq [s]", "settling_after_freq_s", 4.0)
         self._entry(freq_box, "Settle after SMU [s]", "settling_after_smu_s", 1.0)
         self._entry(freq_box, "Max |Z'| before retry [ohm]", "max_abs_z_real_ohm", 100.0)
         self._entry(freq_box, "Outlier retries", "max_outlier_retries", 8)
+        self._entry(freq_box, "Iac sign (+1 or -1)", "iac_measurement_sign", -1.0)
+        self._entry(freq_box, "Nyquist Y sign (+1 or -1)", "nyquist_y_axis_sign", 1.0)
         self._check(freq_box, "Remeasure Z' outliers", "remeasure_z_real_outliers", True)
         self._check(freq_box, "Abort if Z' retries fail", "abort_if_outlier_retries_exhausted", False)
         self._check(freq_box, "Invert current phasor", "invert_current_phasor", False)
@@ -2121,12 +2267,15 @@ class MeasureApp(tk.Tk):
             freq_start_hz=get_float("freq_start_hz"),
             freq_stop_hz=get_float("freq_stop_hz"),
             vac_vpp=get_float("vac_vpp"),
+            custom_vdc_pv_step_size_v=get_float("custom_vdc_pv_step_size_v"),
             settling_after_freq_s=get_float("settling_after_freq_s"),
             settling_after_smu_s=get_float("settling_after_smu_s"),
             max_abs_z_real_ohm=get_float("max_abs_z_real_ohm"),
             max_outlier_retries=get_int("max_outlier_retries"),
             remeasure_z_real_outliers=get_bool("remeasure_z_real_outliers"),
             abort_if_outlier_retries_exhausted=get_bool("abort_if_outlier_retries_exhausted"),
+            iac_measurement_sign=get_float("iac_measurement_sign"),
+            nyquist_y_axis_sign=get_float("nyquist_y_axis_sign"),
             invert_current_phasor=get_bool("invert_current_phasor"),
             invert_voltage_phasor=get_bool("invert_voltage_phasor"),
             operating_point_mode=self.operating_point_var.get(),
@@ -2314,7 +2463,8 @@ class MeasureApp(tk.Tk):
             if selected.get("cap_freq_plot"):
                 plot_specs.append(("_frequency", "f_ac_Hz", "C_uncorrected_F", "Capacitance over frequency", "Frequency [Hz]", f"Capacitance [{self.settings_or_default().capacitance_unit}]", True))
             if selected.get("nyquist_plot"):
-                plot_specs.append(("_nyquist", "Z_real_ohm", "neg_Z_imag_ohm", "Nyquist impedance plot", "Z' [ohm]", "-Z'' [ohm]", False))
+                y_label = "-Z'' [ohm]" if self.settings_or_default().nyquist_y_axis_sign < 0 else "Z'' [ohm]"
+                plot_specs.append(("_frequency", "Z_real_ohm", "Z_imag_ohm", "Nyquist plot", "Z' [ohm]", y_label, False, True))
 
         if selected.get("ab_live") and self.datasets.get("ab_live"):
             self.plot_ab_live(self.datasets["ab_live"])
@@ -2337,21 +2487,15 @@ class MeasureApp(tk.Tk):
             ax.set_visible(False)
 
         for ax, spec in zip(axes.flat, plot_specs):
-            dataset_name, x_key, y_key, title, xlabel, ylabel, force_log_x = spec
+            dataset_name, x_key, y_key, title, xlabel, ylabel, force_log_x, *extra = spec
+            is_nyquist = bool(extra and extra[0])
             if dataset_name == "_frequency":
                 rows = freq_rows
-            elif dataset_name == "_nyquist":
-                rows = []
-                for row in freq_rows:
-                    z_im = safe_log_value(row.get("Z_imag_ohm"))
-                    z_re = safe_log_value(row.get("Z_real_ohm"))
-                    if z_re is not None and z_im is not None:
-                        new_row = dict(row)
-                        new_row["neg_Z_imag_ohm"] = -z_im
-                        rows.append(new_row)
             else:
                 rows = self.datasets.get(dataset_name, [])
             x, y = self.extract_xy(rows, x_key, y_key)
+            if is_nyquist:
+                y = [value * self.settings_or_default().nyquist_y_axis_sign for value in y]
             if y_key in {"C_final_median_F", "C_uncorrected_F"}:
                 scale, unit_label = capacitance_scale_factor(self.settings_or_default().capacitance_unit)
                 y = [v * scale for v in y]

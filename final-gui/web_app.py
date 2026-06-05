@@ -23,11 +23,59 @@ except Exception:  # pragma: no cover
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_SETTINGS_FILE = BASE_DIR / "default_settings.yaml"
+SPEED_PROFILE_SETTINGS_FILE = BASE_DIR / "speedprofile_settings.yaml"
 APP_STARTED_AT = datetime.now().isoformat(timespec="seconds")
 ESTIMATE_FIXED_OVERHEAD_S = 4.0
 ESTIMATE_PER_VOLTAGE_OVERHEAD_S = 0.10
 ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT = 4
 ESTIMATE_AUTO_SMU_SEARCH_READ_S = 0.15
+
+SPEED_PROFILE_ORDER = ["Custom", "Fast", "Medium", "Slow"]
+SPEED_PROFILE_DEFAULTS: Dict[str, Dict[str, float]] = {
+    "Custom": {
+        "vdc_pv_step_size_v": 0.025,
+        "settling_after_smu_s": 1.0,
+        "settling_after_freq_s": 4.0,
+        "lockin_time_constant_wait_s": 0.0,
+    },
+    "Fast": {
+        "vdc_pv_step_size_v": 0.05,
+        "settling_after_smu_s": 1.0,
+        "settling_after_freq_s": 2.6,
+        "lockin_time_constant_wait_s": 0.0,
+    },
+    "Medium": {
+        "vdc_pv_step_size_v": 0.025,
+        "settling_after_smu_s": 1.0,
+        "settling_after_freq_s": 4.0,
+        "lockin_time_constant_wait_s": 0.0,
+    },
+    "Slow": {
+        "vdc_pv_step_size_v": 0.01,
+        "settling_after_smu_s": 1.0,
+        "settling_after_freq_s": 5.6,
+        "lockin_time_constant_wait_s": 0.0,
+    },
+}
+
+CUSTOM_SPEED_FIELD_TO_PROFILE_KEY = {
+    "custom_vdc_pv_step_size_v": "vdc_pv_step_size_v",
+    "settling_after_smu_s": "settling_after_smu_s",
+    "settling_after_freq_s": "settling_after_freq_s",
+    "lockin_time_constant_wait_s": "lockin_time_constant_wait_s",
+}
+
+SPEED_PROFILE_FILE_KEYS = {
+    "vdc_pv_step_size_v": "Vdc_pv Step Size",
+    "settling_after_smu_s": "Settling SMU change time",
+    "settling_after_freq_s": "Settling FG change time",
+    "lockin_time_constant_wait_s": "Lockin Time wait",
+}
+
+SPEED_PROFILE_KEY_ALIASES = {
+    **{external: internal for internal, external in SPEED_PROFILE_FILE_KEYS.items()},
+    **{internal: internal for internal in SPEED_PROFILE_FILE_KEYS},
+}
 
 
 def load_measurement_backend():
@@ -70,6 +118,7 @@ DEFAULT_PLOTS = {
         {"id": "zimag_freq", "label": "Z_imag over frequency", "x": "frequency", "y": "Z_imag", "dataset": "frequency_sweep", "xScale": "log"},
         {"id": "zmag_freq", "label": "Z_mag over frequency", "x": "frequency", "y": "Z_mag", "dataset": "frequency_sweep", "xScale": "log", "yMin": 0},
         {"id": "phase_freq", "label": "Phase_Z over frequency", "x": "frequency", "y": "Phase_Z", "dataset": "frequency_sweep", "xScale": "log"},
+        {"id": "nyquist", "label": "Nyquist plot", "x": "Z_real", "y": "Z_imag", "dataset": "frequency_sweep", "xLabel": "Z_real [ohm]", "yLabel": "Z_imag [ohm]", "nyquist": True},
     ],
     "complete_ac": [
         {"id": "cv", "label": "C-V", "x": "Vdc_pv", "y": "C", "dataset": "cv_curve", "yMin": 0, "filterBelowMin": True},
@@ -143,10 +192,51 @@ class RunState:
 
 
 STATE = RunState()
+LED_CONFIG_LOCK = threading.Lock()
+SPEED_PROFILE_LOCK = threading.Lock()
 
 
 def terminal_log(message: str) -> None:
     print(f"[MeasureApp Web] {message}", flush=True)
+
+
+def configure_led_generator(settings: Any, source: str, raise_errors: bool = True) -> bool:
+    with LED_CONFIG_LOCK:
+        session = backend.VisaController(settings, terminal_log)
+        try:
+            terminal_log(
+                f"{source}: configuring LED generator at {settings.led_fg_addr} "
+                f"with duty={settings.led_duty_cycle_percent:.3g}%."
+            )
+            session.open(
+                need_dmm=False,
+                need_lockin_i=False,
+                need_lockin_v=False,
+                need_fg=False,
+                need_smu=False,
+                need_led_fg=True,
+            )
+            session.configure_led_fg()
+            return True
+        except Exception as exc:
+            message = user_facing_error(exc)
+            terminal_log(f"{source}: LED generator configuration failed: {message}")
+            if raise_errors:
+                raise RuntimeError(message) from exc
+            return False
+        finally:
+            session.close()
+
+
+def user_facing_error(exc: BaseException) -> str:
+    text = str(exc)
+    lower = text.lower()
+    if any(marker in lower for marker in ["vi_error_tmo", "timeout", "not responding", "failed to query", "rejected"]):
+        return (
+            f"{text} Check if all devices are turned on, booted correctly, connected to GPIB, "
+            "and the solar cell is connected."
+        )
+    return text
 
 
 def load_default_settings_file() -> Dict[str, Any]:
@@ -255,6 +345,114 @@ def normalize_gpib_address(value: Any) -> str:
     return f"GPIB0::{text}::INSTR"
 
 
+def default_speed_profiles() -> Dict[str, Dict[str, float]]:
+    return {
+        name: dict(SPEED_PROFILE_DEFAULTS[name])
+        for name in SPEED_PROFILE_ORDER
+    }
+
+
+def load_speed_profile_settings_file() -> Dict[str, Any]:
+    if not SPEED_PROFILE_SETTINGS_FILE.exists():
+        return {}
+    with SPEED_PROFILE_SETTINGS_FILE.open("r", encoding="utf-8") as handle:
+        if yaml is None:
+            return parse_simple_speed_profile_settings(handle.read())
+        loaded = yaml.safe_load(handle) or {}
+    if not isinstance(loaded, dict):
+        raise ValueError("speedprofile_settings.yaml must contain a YAML mapping at the top level.")
+    return loaded
+
+
+def parse_simple_speed_profile_settings(text: str) -> Dict[str, Any]:
+    result: Dict[str, Any] = {"speed_profiles": {}}
+    current_profile: Optional[str] = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent == 0 and stripped == "speed_profiles:":
+            continue
+        if indent == 2 and stripped.endswith(":"):
+            current_profile = stripped[:-1].strip()
+            result["speed_profiles"][current_profile] = {}
+            continue
+        if indent >= 4 and current_profile and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            result["speed_profiles"][current_profile][key.strip()] = parse_simple_yaml_scalar(value)
+    return result
+
+
+def configured_speed_profiles() -> Dict[str, Dict[str, float]]:
+    profiles = default_speed_profiles()
+    config = load_speed_profile_settings_file()
+    section = config.get("speed_profiles", config)
+    if not isinstance(section, dict):
+        return profiles
+
+    for profile_name in SPEED_PROFILE_ORDER:
+        raw_profile = section.get(profile_name, {})
+        if not isinstance(raw_profile, dict):
+            continue
+        for raw_key, raw_value in raw_profile.items():
+            internal_key = SPEED_PROFILE_KEY_ALIASES.get(str(raw_key), str(raw_key))
+            if internal_key not in SPEED_PROFILE_FILE_KEYS:
+                continue
+            value = safe_float(raw_value)
+            if value is not None:
+                profiles[profile_name][internal_key] = value
+    return profiles
+
+
+def save_speed_profiles(profiles: Dict[str, Dict[str, float]]) -> None:
+    lines = [
+        "# Speed profile defaults for web measurements.",
+        "# Custom is edited from the Advanced settings panel.",
+        "",
+        "speed_profiles:",
+    ]
+    for profile_name in SPEED_PROFILE_ORDER:
+        lines.append(f"  {profile_name}:")
+        for internal_key, external_key in SPEED_PROFILE_FILE_KEYS.items():
+            lines.append(f"    {external_key}: {float(profiles[profile_name][internal_key]):.12g}")
+    with SPEED_PROFILE_LOCK:
+        SPEED_PROFILE_SETTINGS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def sync_backend_speed_profiles(profiles: Dict[str, Dict[str, float]]) -> None:
+    for profile_name, profile in profiles.items():
+        backend.AUTO_VDC_STEP_BY_SPEED[profile_name] = float(profile["vdc_pv_step_size_v"])
+    if "Custom" not in backend.SPEED_LEVELS:
+        backend.SPEED_LEVELS["Custom"] = backend.SpeedLevel("Custom", points_per_decade=4, repeats=2, settling_multiplier=1.0)
+
+
+def apply_custom_profile_to_settings(settings: Any, profiles: Dict[str, Dict[str, float]]) -> None:
+    custom = profiles["Custom"]
+    settings.custom_vdc_pv_step_size_v = float(custom["vdc_pv_step_size_v"])
+    settings.settling_after_smu_s = float(custom["settling_after_smu_s"])
+    settings.settling_after_freq_s = float(custom["settling_after_freq_s"])
+    settings.lockin_time_constant_wait_s = float(custom["lockin_time_constant_wait_s"])
+
+
+def apply_speed_profile_to_settings(settings: Any, speed: str, profiles: Dict[str, Dict[str, float]]) -> None:
+    profile = profiles.get(speed, profiles.get("Medium", SPEED_PROFILE_DEFAULTS["Medium"]))
+    if speed == "Custom":
+        profile = {
+            "vdc_pv_step_size_v": float(settings.custom_vdc_pv_step_size_v),
+            "settling_after_smu_s": float(settings.settling_after_smu_s),
+            "settling_after_freq_s": float(settings.settling_after_freq_s),
+            "lockin_time_constant_wait_s": float(settings.lockin_time_constant_wait_s),
+        }
+    settings.settling_after_smu_s = float(profile["settling_after_smu_s"])
+    settings.settling_after_freq_s = float(profile["settling_after_freq_s"])
+    settings.lockin_time_constant_wait_s = float(profile["lockin_time_constant_wait_s"])
+    if speed == "Custom":
+        settings.custom_vdc_pv_step_size_v = float(profile["vdc_pv_step_size_v"])
+    backend.AUTO_VDC_STEP_BY_SPEED[speed] = float(profile["vdc_pv_step_size_v"])
+
+
 def configured_defaults_section() -> Dict[str, Any]:
     config = load_default_settings_file()
     section = config.get("advanced_settings", config)
@@ -266,12 +464,15 @@ def configured_defaults_section() -> Dict[str, Any]:
 def settings_with_config_defaults() -> Any:
     settings = backend.Settings()
     defaults = configured_defaults_section()
+    speed_profiles = configured_speed_profiles()
+    sync_backend_speed_profiles(speed_profiles)
     for field in fields(settings):
         if field.name in defaults:
             value = coerce_value(defaults[field.name], getattr(settings, field.name))
-            if field.name in {"dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr"}:
+            if field.name in {"dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "led_fg_addr", "smu_addr"}:
                 value = normalize_gpib_address(value)
             setattr(settings, field.name, value)
+    apply_custom_profile_to_settings(settings, speed_profiles)
     return settings
 
 
@@ -286,13 +487,21 @@ def default_settings_dict() -> Dict[str, Any]:
     return data
 
 
+def speed_profiles_dict() -> Dict[str, Dict[str, float]]:
+    profiles = configured_speed_profiles()
+    sync_backend_speed_profiles(profiles)
+    return profiles
+
+
 def settings_from_payload(payload: Dict[str, Any]) -> Any:
     settings_data = payload.get("settings", {})
     settings = settings_with_config_defaults()
+    speed_profiles = configured_speed_profiles()
+    sync_backend_speed_profiles(speed_profiles)
     for field in fields(settings):
         if field.name in settings_data:
             value = coerce_value(settings_data[field.name], getattr(settings, field.name))
-            if field.name in {"dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "smu_addr"}:
+            if field.name in {"dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "led_fg_addr", "smu_addr"}:
                 value = normalize_gpib_address(value)
             setattr(settings, field.name, value)
 
@@ -322,6 +531,8 @@ def settings_from_payload(payload: Dict[str, Any]) -> Any:
             settings.freq_stop_hz = f
         if "cv_smu_step_v" in ac:
             settings.cv_smu_step_v = float(ac["cv_smu_step_v"])
+    speed = str(payload.get("speed") or settings_data.get("test_speed") or default_speed())
+    apply_speed_profile_to_settings(settings, speed, speed_profiles)
     return settings
 
 
@@ -390,9 +601,8 @@ def estimate_voltage_points(settings: Any, speed: str, step_key: str, calibratio
 def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibration: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     mode = payload.get("mode", "standard_dc")
     speed = payload.get("speed", "Medium")
-    level = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
     settling_smu = max(0.0, float(settings.settling_after_smu_s))
-    settling_freq = max(0.0, float(settings.settling_after_freq_s) * float(level.settling_multiplier))
+    settling_freq = max(0.0, float(settings.settling_after_freq_s))
     lockin_wait = max(0.0, float(settings.lockin_time_constant_wait_s))
     per_freq_s = settling_freq + lockin_wait + 0.15
     n_freq = count_freq_points(settings, speed)
@@ -417,15 +627,7 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
         n_voltage = int(voltage_plan["points"])
         total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S + n_freq * per_freq_s) + float(voltage_plan["search_overhead_s"]) + overhead_s
     elif mode == "live_lockin":
-        return {
-            "mode": mode,
-            "label": "Live monitor",
-            "indeterminate": True,
-            "base_percent": 0.0,
-            "end_percent": 100.0,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "message": "Live monitor running",
-        }
+        return {}
     elif mode == "smu_calibration":
         n_voltage = count_linear_points(settings.smu_start_v, settings.smu_stop_v, 0.005)
         total_s = n_voltage * 0.15
@@ -466,6 +668,8 @@ def calibration_progress(base_percent: float, end_percent: float, label: str = "
 def serialize_summary(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     if hasattr(value, "__dataclass_fields__"):
         return {k: serialize_summary(v) for k, v in asdict(value).items()}
     if isinstance(value, dict):
@@ -473,6 +677,10 @@ def serialize_summary(value: Any) -> Any:
     if isinstance(value, list):
         return [serialize_summary(v) for v in value]
     return value
+
+
+def json_safe(value: Any) -> Any:
+    return serialize_summary(value)
 
 
 def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, Any]]], output_dir: Path) -> Path:
@@ -606,7 +814,8 @@ def run_measurement(payload: Dict[str, Any]) -> None:
     try:
         with STATE.lock:
             existing_calibration = dict(STATE.smu_calibration)
-        if settings.auto_smu_range and not existing_calibration:
+        requires_smu_calibration = mode != "live_lockin"
+        if requires_smu_calibration and settings.auto_smu_range and not existing_calibration:
             terminal_log("Automatic SMU range is enabled and no calibration exists. Calibrating before measurement...")
             with STATE.lock:
                 STATE.mode = "smu_calibration"
@@ -623,7 +832,7 @@ def run_measurement(payload: Dict[str, Any]) -> None:
                     "progress_end_percent": 100.0,
                 }, settings, calibration)
             terminal_log("Automatic SMU range calibration complete. Continuing measurement.")
-        elif settings.auto_smu_range and existing_calibration:
+        elif requires_smu_calibration and settings.auto_smu_range and existing_calibration:
             apply_calibration_to_settings(settings, existing_calibration)
 
         with STATE.lock:
@@ -649,13 +858,13 @@ def run_measurement(payload: Dict[str, Any]) -> None:
     except backend.StopMeasurement as exc:
         with STATE.lock:
             STATE.status = "failed"
-            STATE.short_error = f"Stopped by safety limit: {exc}"
+            STATE.short_error = f"Stopped by safety limit: {user_facing_error(exc)}"
             STATE.completed_at = datetime.now().isoformat(timespec="seconds")
         terminal_log("Safety stop:\n" + traceback.format_exc())
     except Exception as exc:
         with STATE.lock:
             STATE.status = "failed"
-            STATE.short_error = str(exc)
+            STATE.short_error = user_facing_error(exc)
             STATE.completed_at = datetime.now().isoformat(timespec="seconds")
         terminal_log("Measurement failed:\n" + traceback.format_exc())
 
@@ -689,7 +898,7 @@ def run_calibration(payload: Dict[str, Any]) -> None:
     except Exception as exc:
         with STATE.lock:
             STATE.status = "failed"
-            STATE.short_error = str(exc)
+            STATE.short_error = user_facing_error(exc)
             STATE.completed_at = datetime.now().isoformat(timespec="seconds")
         terminal_log("Calibration failed:\n" + traceback.format_exc())
 
@@ -700,13 +909,14 @@ def index():
         "index.html",
         default_settings=default_settings_dict(),
         default_plots=DEFAULT_PLOTS,
+        speed_profiles=speed_profiles_dict(),
         app_started_at=APP_STARTED_AT,
     )
 
 
 @app.get("/api/defaults")
 def defaults():
-    return jsonify({"settings": default_settings_dict(), "default_plots": DEFAULT_PLOTS})
+    return jsonify({"settings": default_settings_dict(), "default_plots": DEFAULT_PLOTS, "speed_profiles": speed_profiles_dict()})
 
 
 @app.post("/api/start")
@@ -719,8 +929,8 @@ def start():
         if STATE.status == "running":
             return jsonify({"ok": False, "error": "A measurement is already running."}), 409
         existing_calibration = dict(STATE.smu_calibration)
-        needs_calibration = bool(settings.auto_smu_range and not existing_calibration)
-        if settings.auto_smu_range and existing_calibration:
+        needs_calibration = bool(mode != "live_lockin" and settings.auto_smu_range and not existing_calibration)
+        if mode != "live_lockin" and settings.auto_smu_range and existing_calibration:
             apply_calibration_to_settings(settings, existing_calibration)
         STATE.status = "running"
         STATE.mode = mode
@@ -737,6 +947,7 @@ def start():
         STATE.live_control = {
             "smu_voltage_v": settings.manual_smu_voltage_v,
             "fg_frequency_hz": settings.freq_start_hz,
+            "led_duty_cycle_percent": settings.led_duty_cycle_percent,
         }
         STATE.stop_event = threading.Event()
         STATE.worker = threading.Thread(target=run_measurement, args=(payload,), daemon=True)
@@ -771,11 +982,54 @@ def live_control():
         updates["smu_voltage_v"] = float(payload["smu_voltage_v"])
     if "fg_frequency_hz" in payload:
         updates["fg_frequency_hz"] = float(payload["fg_frequency_hz"])
+    if "led_duty_cycle_percent" in payload:
+        updates["led_duty_cycle_percent"] = min(99.0, max(1.0, float(payload["led_duty_cycle_percent"])))
     with STATE.lock:
         STATE.live_control.update(updates)
         current = dict(STATE.live_control)
     terminal_log(f"Live control updated: {updates}")
     return jsonify({"ok": True, "live_control": current})
+
+
+@app.post("/api/led/control")
+def led_control():
+    payload = request.get_json(force=True)
+    settings = settings_from_payload(payload)
+    if "led_duty_cycle_percent" in payload:
+        settings.led_duty_cycle_percent = float(payload["led_duty_cycle_percent"])
+    settings.led_duty_cycle_percent = min(99.0, max(1.0, float(settings.led_duty_cycle_percent)))
+    with STATE.lock:
+        if STATE.status == "running" and STATE.mode == "live_lockin":
+            STATE.live_control["led_duty_cycle_percent"] = settings.led_duty_cycle_percent
+            terminal_log(f"Live LED brightness update queued: {settings.led_duty_cycle_percent:.3g}%")
+            return jsonify({"ok": True, "led_duty_cycle_percent": settings.led_duty_cycle_percent, "queued": True})
+    try:
+        configure_led_generator(settings, "Advanced LED setting")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": user_facing_error(exc)}), 500
+    return jsonify({"ok": True, "led_duty_cycle_percent": settings.led_duty_cycle_percent})
+
+
+@app.post("/api/speed-profiles/custom")
+def save_custom_speed_profile():
+    payload = request.get_json(force=True)
+    settings_data = payload.get("settings", payload)
+    profiles = configured_speed_profiles()
+    custom = dict(profiles["Custom"])
+    for settings_key, profile_key in CUSTOM_SPEED_FIELD_TO_PROFILE_KEY.items():
+        if settings_key not in settings_data:
+            continue
+        value = safe_float(settings_data[settings_key])
+        if value is not None:
+            if profile_key == "vdc_pv_step_size_v" and value <= 0:
+                return jsonify({"ok": False, "error": "Custom Vdc_pv Step Size must be positive."}), 400
+            if profile_key != "vdc_pv_step_size_v" and value < 0:
+                return jsonify({"ok": False, "error": "Custom settling times cannot be negative."}), 400
+            custom[profile_key] = value
+    profiles["Custom"] = custom
+    save_speed_profiles(profiles)
+    sync_backend_speed_profiles(profiles)
+    return jsonify({"ok": True, "speed_profiles": profiles})
 
 
 @app.post("/api/stop")
@@ -787,18 +1041,18 @@ def stop():
 
 @app.get("/api/status")
 def status():
-    return jsonify(STATE.snapshot())
+    return jsonify(json_safe(STATE.snapshot()))
 
 
 @app.get("/api/results")
 def results():
     with STATE.lock:
-        return jsonify({
+        return jsonify(json_safe({
             "datasets": STATE.datasets,
             "summary": STATE.summary,
             "status": STATE.status,
             "short_error": STATE.short_error,
-        })
+        }))
 
 
 @app.post("/api/upload")
@@ -852,5 +1106,6 @@ def download_combined():
 if __name__ == "__main__":
     terminal_log(f"Script: {Path(__file__).resolve()}")
     terminal_log(f"Working directory: {Path.cwd()}")
+    configure_led_generator(settings_with_config_defaults(), "Startup", raise_errors=False)
     terminal_log("Open browser: http://127.0.0.1:5000")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

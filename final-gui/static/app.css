@@ -249,6 +249,20 @@ dialog form { padding: 20px; }
   display: grid;
   gap: 5px;
 }
+.led-duty-field {
+  grid-column: 1 / -1;
+}
+.range-pair {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 110px;
+  gap: 10px;
+  align-items: center;
+}
+.range-pair input[type="range"] {
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
 .advanced-section-grid label.disabled-field {
   opacity: 0.48;
 }
@@ -271,7 +285,7 @@ dialog form { padding: 20px; }
 }
 .live-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   gap: 10px;
   align-items: end;
   margin-bottom: 12px;
@@ -283,7 +297,7 @@ dialog form { padding: 20px; }
 }
 .live-values {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }

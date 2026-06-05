@@ -54,6 +54,7 @@ dmm_addr: 10
 lockin_i_addr: 15
 lockin_v_addr: 12
 fg_addr: 14
+led_fg_addr: 11
 smu_addr: 26
 ```
 
@@ -68,6 +69,7 @@ Important settings:
 - `cv_smu_step_v` - SMU voltage step size used for Complete AC / C-V when automatic step size is off.
 - `freq_start_hz`, `freq_stop_hz` - default AC frequency range.
 - `vac_vpp`, `fg_offset_v`, `fg_waveform` - function generator settings.
+- `led_duty_cycle_percent` - Tektronix AFG3101 LED modulation duty cycle, clamped to `1-99%`.
 - `settling_after_smu_s`, `settling_after_freq_s`, `lockin_time_constant_wait_s` - timing settings.
 - `max_smu_v`, `smu_current_limit_a`, `max_idc_abs_a`, `max_vdc_pv_v` - safety limits.
 - `idc_adc1_to_ampere`, `idc_measurement_sign` - conversion/sign for ADC1 current.
@@ -107,6 +109,19 @@ The bottom progress bar includes extra estimated time for this first uncached au
 During calibration, only Stop is shown. Resume is hidden because there is no useful plot-selection screen to resume into.
 
 If a first measurement is started while automatic range is enabled and no calibration exists yet, the app calibrates first and then continues with the selected measurement.
+
+## LED Modulation Generator
+
+The GUI configures the Tektronix AFG3101 at `led_fg_addr` for LED modulation whenever a measurement session starts:
+
+- Pulse waveform
+- Frequency `1 MHz`
+- Amplitude `5 Vpp`
+- Offset `2.5 V`
+- Output on
+- Duty cycle from Advanced settings, `1-99%`
+
+The LED generator is configured once when `web_app.py` starts. The LED duty cycle can be changed in Advanced settings under `LED settings` using either the slider or textbox; changes are applied directly to the generator.
 
 ## Measurements
 

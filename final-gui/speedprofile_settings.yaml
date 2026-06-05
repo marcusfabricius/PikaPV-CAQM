@@ -1,0 +1,24 @@
+# Speed profile defaults for web measurements.
+# Custom is edited from the Advanced settings panel.
+
+speed_profiles:
+  Custom:
+    Vdc_pv Step Size: 0.025
+    Settling SMU change time: 1.0
+    Settling FG change time: 4.0
+    Lockin Time wait: 0.0
+  Fast:
+    Vdc_pv Step Size: 0.05
+    Settling SMU change time: 1.0
+    Settling FG change time: 2.6
+    Lockin Time wait: 0.0
+  Medium:
+    Vdc_pv Step Size: 0.025
+    Settling SMU change time: 1.0
+    Settling FG change time: 4.0
+    Lockin Time wait: 0.0
+  Slow:
+    Vdc_pv Step Size: 0.01
+    Settling SMU change time: 1.0
+    Settling FG change time: 5.6
+    Lockin Time wait: 0.0
