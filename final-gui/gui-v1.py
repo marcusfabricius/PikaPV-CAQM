@@ -336,6 +336,7 @@ class Settings:
     # Outlier handling
     remeasure_z_real_outliers: bool = True
     max_abs_z_real_ohm: float = 100.0
+    z_real_outlier_min_vdc_pv_v: float = 0.05
     max_outlier_retries: int = 8
     outlier_retry_wait_s: float = 1.0
     abort_if_outlier_retries_exhausted: bool = False
@@ -852,6 +853,8 @@ class MeasurementEngine:
                 raise ValueError(f"{label} timing values cannot be negative.")
         if self.settings.max_outlier_retries < 0:
             raise ValueError("Maximum outlier retries must be zero or positive.")
+        if self.settings.z_real_outlier_min_vdc_pv_v < 0:
+            raise ValueError("Z' outlier minimum Vdc_pv must be zero or positive.")
         capacitance_scale_factor(self.settings.capacitance_unit)
 
     def auto_smu_step_enabled(self) -> bool:
@@ -1464,12 +1467,14 @@ class MeasurementEngine:
         abort_if_negative_idc: bool,
         rejected_rows: List[Dict[str, Any]],
         settling_s: float,
+        remeasure_z_real_outliers: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         session.strict_write(session.fg, f"FREQ {f_ac}", "Function generator")
         time.sleep(settling_s + self.settings.lockin_time_constant_wait_s)
         total_attempts = self.settings.max_outlier_retries + 1
         last_iac_mag = 0.0
         last_outlier_row: Optional[Dict[str, Any]] = None
+        should_remeasure_z_real = self.settings.remeasure_z_real_outliers if remeasure_z_real_outliers is None else remeasure_z_real_outliers
         for attempt in range(1, total_attempts + 1):
             self.check_stop()
             vdc, idc, idc_raw = session.read_dc()
@@ -1492,7 +1497,12 @@ class MeasurementEngine:
                 self.settings.min_iac_mag_a,
             )
             cap_f, y_real, y_imag = capacitance_from_impedance(z_real, z_imag, f_ac)
-            is_outlier = self.settings.remeasure_z_real_outliers and abs(z_real) > self.settings.max_abs_z_real_ohm
+            z_real_outlier_check_allowed = vdc >= self.settings.z_real_outlier_min_vdc_pv_v
+            is_outlier = (
+                should_remeasure_z_real
+                and z_real_outlier_check_allowed
+                and abs(z_real) > self.settings.max_abs_z_real_ohm
+            )
 
             row = {
                 **base_row,
@@ -1501,6 +1511,7 @@ class MeasurementEngine:
                 "measurement_attempt": attempt,
                 "outlier_retries_before_acceptance": attempt - 1,
                 "is_rejected_Z_real_outlier": is_outlier,
+                "z_real_outlier_check_allowed": z_real_outlier_check_allowed,
                 "Vdc_pv_V": vdc,
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
@@ -1706,6 +1717,7 @@ class MeasurementEngine:
                             abort_if_negative_idc=self.settings.stop_if_idc_negative,
                             rejected_rows=rejected_rows,
                             settling_s=settling_s,
+                            remeasure_z_real_outliers=False,
                         )
                         if row is not None:
                             rows_for_voltage.append(row)

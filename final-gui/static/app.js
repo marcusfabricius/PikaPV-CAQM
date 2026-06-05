@@ -91,7 +91,8 @@ const advancedFieldLabels = {
   custom_minimum_frequency_points: "Minimum frequency points",
   settling_after_smu_s: "Settling SMU change time [s]",
   settling_after_freq_s: "Settling FG change time [s]",
-  lockin_time_constant_wait_s: "Lockin Time wait [s]"
+  lockin_time_constant_wait_s: "Lockin Time wait [s]",
+  z_real_outlier_min_vdc_pv_v: "Z' retry minimum Vdc_pv [V]"
 };
 
 function loadPersistedAdvancedSettings() {
@@ -623,7 +624,7 @@ function buildAdvanced() {
     ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
     ["Lock In Amp settings", ["iac_measurement_sign", "iac_mag_cmd", "iac_phase_cmd", "idc_adc1_cmd", "vac_mag_cmd", "vac_phase_cmd", "configure_lockins", "lockin_sensitivity_cmd", "invert_voltage_phasor"]],
     ["GPIB addresses", ["dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "led_fg_addr", "smu_addr"]],
-    ["Others", ["freq_start_hz", "freq_stop_hz", "vac_vpp", "fg_offset_v", "fg_waveform", "ab_sample_interval_s", "max_abs_z_real_ohm", "max_outlier_retries", "outlier_retry_wait_s", "remeasure_z_real_outliers", "abort_if_outlier_retries_exhausted", "simulation_mode", "output_dir", "capacitance_unit", "nyquist_y_axis_sign"]]
+    ["Others", ["freq_start_hz", "freq_stop_hz", "vac_vpp", "fg_offset_v", "fg_waveform", "ab_sample_interval_s", "max_abs_z_real_ohm", "z_real_outlier_min_vdc_pv_v", "max_outlier_retries", "outlier_retry_wait_s", "remeasure_z_real_outliers", "abort_if_outlier_retries_exhausted", "simulation_mode", "output_dir", "capacitance_unit", "nyquist_y_axis_sign"]]
   ];
   $("advancedGrid").innerHTML = sections.map(([title, keys], index) => `
     <details class="advanced-section" ${index < 2 ? "open" : ""}>

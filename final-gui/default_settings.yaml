@@ -57,6 +57,7 @@ advanced_settings:
   # Outlier handling
   remeasure_z_real_outliers: true
   max_abs_z_real_ohm: 100.0
+  z_real_outlier_min_vdc_pv_v: 0.05
   max_outlier_retries: 8
   outlier_retry_wait_s: 1.0
   abort_if_outlier_retries_exhausted: false
