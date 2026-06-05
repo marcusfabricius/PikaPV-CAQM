@@ -169,8 +169,7 @@ select, input {
 }
 
 .wait {
-  text-align: center;
-  padding: 80px 20px;
+  padding: 26px 0 10px;
 }
 .spinner {
   width: 48px;
@@ -182,6 +181,73 @@ select, input {
   margin: 0 auto 20px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.wait-game {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  overflow: hidden;
+}
+.wait-game-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.wait-game-header h2 {
+  margin-bottom: 4px;
+}
+.wait-game-header p {
+  margin-bottom: 0;
+}
+.wait-game-scores {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+.wait-game-scores span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+  min-width: 92px;
+}
+.wait-game-scores strong {
+  display: block;
+  color: var(--ink);
+  margin-top: 2px;
+}
+#pikaGameCanvas {
+  display: block;
+  width: 100%;
+  height: clamp(210px, 28vw, 280px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff9df;
+}
+.pika-game-stage {
+  position: relative;
+}
+#pikaGameSprite {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 58px;
+  height: 46px;
+  object-fit: contain;
+  pointer-events: none;
+  transform: translate3d(70px, 160px, 0);
+  filter: drop-shadow(0 3px 2px rgba(24, 32, 42, .18));
+}
+.wait-game-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
 
 .plots {
   display: grid;
@@ -409,5 +475,7 @@ dialog form { padding: 20px; }
   .conditional, .advanced-section-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-controls { grid-template-columns: 1fr; }
   .live-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wait-game-header { flex-direction: column; }
+  .wait-game-scores { justify-content: flex-start; }
   .topbar, .actions, .result-actions { align-items: stretch; flex-direction: column; }
 }
