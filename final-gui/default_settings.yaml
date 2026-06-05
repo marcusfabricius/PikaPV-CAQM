@@ -16,7 +16,7 @@ advanced_settings:
 
   # Output and simulation
   output_dir: measurement_output
-  simulation_mode: true
+  simulation_mode: false
 
   # SMU and DC sweep
   auto_smu_range: true
@@ -27,7 +27,7 @@ advanced_settings:
   max_smu_v: 15.0
   target_vpv_v: 1.0
   vdc_positive_threshold_v: 0.0001
-  max_vdc_pv_v: 0.80
+  max_vdc_pv_v: 2.0
   stop_if_vdc_exceeds_max: false
   stop_if_idc_negative: true
   negative_idc_limit_a: -0.000001
