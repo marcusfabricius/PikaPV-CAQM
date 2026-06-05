@@ -1,11 +1,11 @@
 """
-MeasureApp combined GUI
+PikaPV combined GUI
 
 This file combines the IV/PV sweep, CV sweep, impedance frequency sweep,
 and A-B differential live monitor into one GUI-driven measurement program.
 
 Run:
-    python measureapp_combined_gui.py
+    python gui-v1.py
 
 Required packages:
     pip install pyvisa matplotlib
@@ -130,17 +130,18 @@ def linear_points(start: float, stop: float, step: float) -> List[float]:
     return points
 
 
-def logspace_points(f_start: float, f_stop: float, points_per_decade: int) -> List[float]:
+def logspace_points(f_start: float, f_stop: float, points_per_decade: int, minimum_points: int = 2) -> List[float]:
     if f_start <= 0 or f_stop <= 0:
         raise ValueError("Frequency limits must be positive.")
     if f_stop <= f_start:
         raise ValueError("Stop frequency must be larger than start frequency.")
     if points_per_decade <= 0:
         raise ValueError("Points per decade must be positive.")
+    if minimum_points <= 0:
+        raise ValueError("Minimum frequency points must be positive.")
     decades = math.log10(f_stop) - math.log10(f_start)
     n_points = int(math.ceil(decades * points_per_decade)) + 1
-    if n_points < 2:
-        n_points = 2
+    n_points = max(2, int(minimum_points), n_points)
     return [
         10 ** (math.log10(f_start) + k * decades / (n_points - 1))
         for k in range(n_points)
@@ -238,15 +239,16 @@ def safe_log_value(value: Any) -> Optional[float]:
 class SpeedLevel:
     label: str
     points_per_decade: int
+    minimum_frequency_points: int
     repeats: int
     settling_multiplier: float
 
 
 SPEED_LEVELS: Dict[str, SpeedLevel] = {
-    "Custom": SpeedLevel("Custom", points_per_decade=4, repeats=2, settling_multiplier=1.0),
-    "Fast": SpeedLevel("Fast", points_per_decade=2, repeats=1, settling_multiplier=1.0),
-    "Medium": SpeedLevel("Medium", points_per_decade=4, repeats=2, settling_multiplier=1.0),
-    "Slow": SpeedLevel("Slow", points_per_decade=8, repeats=4, settling_multiplier=1.0),
+    "Custom": SpeedLevel("Custom", points_per_decade=8, minimum_frequency_points=8, repeats=2, settling_multiplier=1.0),
+    "Fast": SpeedLevel("Fast", points_per_decade=4, minimum_frequency_points=6, repeats=1, settling_multiplier=1.0),
+    "Medium": SpeedLevel("Medium", points_per_decade=8, minimum_frequency_points=10, repeats=2, settling_multiplier=1.0),
+    "Slow": SpeedLevel("Slow", points_per_decade=16, minimum_frequency_points=16, repeats=4, settling_multiplier=1.0),
 }
 
 AUTO_VDC_STEP_BY_SPEED: Dict[str, float] = {
@@ -308,7 +310,21 @@ class Settings:
     fg_waveform: str = "SIN"
     freq_start_hz: float = 5.0
     freq_stop_hz: float = 10000.0
+    custom_frequency_sweep_vdc_pv_step_size_v: float = 0.025
+    custom_frequency_sweep_frequency_points_per_decade: int = 8
+    custom_frequency_sweep_minimum_frequency_points: int = 8
+    custom_frequency_sweep_settling_after_smu_s: float = 1.0
+    custom_frequency_sweep_settling_after_freq_s: float = 4.0
+    custom_frequency_sweep_lockin_time_constant_wait_s: float = 0.0
+    custom_cv_vdc_pv_step_size_v: float = 0.025
+    custom_cv_frequency_points_per_decade: int = 8
+    custom_cv_minimum_frequency_points: int = 8
+    custom_cv_settling_after_smu_s: float = 1.0
+    custom_cv_settling_after_freq_s: float = 4.0
+    custom_cv_lockin_time_constant_wait_s: float = 0.0
     custom_vdc_pv_step_size_v: float = 0.025
+    custom_frequency_points_per_decade: int = 8
+    custom_minimum_frequency_points: int = 8
     settling_after_smu_s: float = 1.0
     settling_after_freq_s: float = 4.0
     lockin_time_constant_wait_s: float = 0.0
@@ -796,6 +812,44 @@ class MeasurementEngine:
             raise ValueError("Nyquist Y-axis sign must be +1 or -1.")
         if self.settings.custom_vdc_pv_step_size_v <= 0:
             raise ValueError("Custom Vdc_pv step size must be positive.")
+        if self.settings.custom_frequency_points_per_decade <= 0:
+            raise ValueError("Custom frequency points per decade must be positive.")
+        if self.settings.custom_minimum_frequency_points <= 0:
+            raise ValueError("Custom minimum frequency points must be positive.")
+        if (
+            self.settings.settling_after_smu_s < 0
+            or self.settings.settling_after_freq_s < 0
+            or self.settings.lockin_time_constant_wait_s < 0
+        ):
+            raise ValueError("Settling and lock-in timing values cannot be negative.")
+        for label, step, points, minimum, settle_smu, settle_freq, lockin_wait in (
+            (
+                "Custom frequency sweep",
+                self.settings.custom_frequency_sweep_vdc_pv_step_size_v,
+                self.settings.custom_frequency_sweep_frequency_points_per_decade,
+                self.settings.custom_frequency_sweep_minimum_frequency_points,
+                self.settings.custom_frequency_sweep_settling_after_smu_s,
+                self.settings.custom_frequency_sweep_settling_after_freq_s,
+                self.settings.custom_frequency_sweep_lockin_time_constant_wait_s,
+            ),
+            (
+                "Custom CV curve",
+                self.settings.custom_cv_vdc_pv_step_size_v,
+                self.settings.custom_cv_frequency_points_per_decade,
+                self.settings.custom_cv_minimum_frequency_points,
+                self.settings.custom_cv_settling_after_smu_s,
+                self.settings.custom_cv_settling_after_freq_s,
+                self.settings.custom_cv_lockin_time_constant_wait_s,
+            ),
+        ):
+            if step <= 0:
+                raise ValueError(f"{label} Vdc_pv step size must be positive.")
+            if points <= 0:
+                raise ValueError(f"{label} frequency points per decade must be positive.")
+            if minimum <= 0:
+                raise ValueError(f"{label} minimum frequency points must be positive.")
+            if settle_smu < 0 or settle_freq < 0 or lockin_wait < 0:
+                raise ValueError(f"{label} timing values cannot be negative.")
         if self.settings.max_outlier_retries < 0:
             raise ValueError("Maximum outlier retries must be zero or positive.")
         capacitance_scale_factor(self.settings.capacitance_unit)
@@ -807,6 +861,17 @@ class MeasurementEngine:
         if speed_name == "Custom":
             return float(self.settings.custom_vdc_pv_step_size_v)
         return AUTO_VDC_STEP_BY_SPEED.get(speed_name, AUTO_VDC_STEP_BY_SPEED["Medium"])
+
+    def sync_custom_speed_profile_from_settings(self) -> None:
+        AUTO_VDC_STEP_BY_SPEED["Custom"] = float(self.settings.custom_vdc_pv_step_size_v)
+        current = SPEED_LEVELS["Custom"]
+        SPEED_LEVELS["Custom"] = SpeedLevel(
+            "Custom",
+            points_per_decade=max(1, int(self.settings.custom_frequency_points_per_decade)),
+            minimum_frequency_points=max(1, int(self.settings.custom_minimum_frequency_points)),
+            repeats=current.repeats,
+            settling_multiplier=1.0,
+        )
 
     def auto_smu_cache_key(self, speed_name: str, start_v: float, stop_v: float) -> Tuple[str, float, float, float]:
         return (
@@ -1031,6 +1096,7 @@ class MeasurementEngine:
         return finish()
 
     def estimate_cv_duration(self, pre_summary: Optional[PreScanSummary] = None) -> Dict[str, str]:
+        self.sync_custom_speed_profile_from_settings()
         if pre_summary is None:
             n_voltage = max(1, len(linear_points(self.settings.smu_start_v, self.settings.smu_stop_v, self.settings.cv_smu_step_v)))
             pre_s = 0.0
@@ -1042,7 +1108,12 @@ class MeasurementEngine:
             if math.isclose(self.settings.freq_start_hz, self.settings.freq_stop_hz, rel_tol=0.0, abs_tol=1e-12):
                 n_freq = 1
             else:
-                n_freq = len(logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade))
+                n_freq = len(logspace_points(
+                    self.settings.freq_start_hz,
+                    self.settings.freq_stop_hz,
+                    level.points_per_decade,
+                    level.minimum_frequency_points,
+                ))
             settle_freq = self.settings.settling_after_freq_s
             per_freq_s = settle_freq + self.settings.lockin_time_constant_wait_s + 0.15
             total_s = pre_s + n_voltage * self.settings.settling_after_smu_s
@@ -1545,7 +1616,12 @@ class MeasurementEngine:
                 raise ValueError("Single CV frequency must be positive.")
             freqs = [self.settings.freq_start_hz]
         else:
-            freqs = logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade)
+            freqs = logspace_points(
+                self.settings.freq_start_hz,
+                self.settings.freq_stop_hz,
+                level.points_per_decade,
+                level.minimum_frequency_points,
+            )
         settling_s = self.settings.settling_after_freq_s
         cv_repeats = 1
         all_rows: List[Dict[str, Any]] = []
@@ -1763,7 +1839,12 @@ class MeasurementEngine:
         output_dir = self.settings.output_dir
         ensure_dir(output_dir)
         timestamp = now_tag()
-        freqs = logspace_points(self.settings.freq_start_hz, self.settings.freq_stop_hz, level.points_per_decade)
+        freqs = logspace_points(
+            self.settings.freq_start_hz,
+            self.settings.freq_stop_hz,
+            level.points_per_decade,
+            level.minimum_frequency_points,
+        )
         settling_s = self.settings.settling_after_freq_s
         dc_rows: List[Dict[str, Any]] = []
         impedance_rows: List[Dict[str, Any]] = []
@@ -2011,6 +2092,7 @@ class MeasurementEngine:
                 session.close()
 
     def run_selected(self, selected: Dict[str, bool], speed_name: str) -> RunResult:
+        self.sync_custom_speed_profile_from_settings()
         datasets: Dict[str, List[Dict[str, Any]]] = {}
         files: List[Path] = []
         summary: Dict[str, Any] = {}
@@ -2061,10 +2143,10 @@ class MeasurementEngine:
 # ============================================================================
 
 
-class MeasureApp(tk.Tk):
+class PikaPVApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MeasureApp")
+        self.title("PikaPV")
         self.geometry("1500x920")
         self.minsize(1150, 740)
 
@@ -2152,7 +2234,7 @@ class MeasureApp(tk.Tk):
             level = SPEED_LEVELS[name]
             ttk.Radiobutton(
                 speed_box,
-                text=f"{name} - {level.points_per_decade} pts/dec, {level.repeats} avg",
+                text=f"{name} - {level.points_per_decade} pts/dec, min {level.minimum_frequency_points}, {level.repeats} avg",
                 variable=self.speed_var,
                 value=name,
             ).pack(anchor="w")
@@ -2205,6 +2287,8 @@ class MeasureApp(tk.Tk):
         self._entry(freq_box, "Frequency stop [Hz]", "freq_stop_hz", 10000.0)
         self._entry(freq_box, "AC perturbation [Vpp]", "vac_vpp", 0.010)
         self._entry(freq_box, "Custom Vdc_pv step [V]", "custom_vdc_pv_step_size_v", 0.025)
+        self._entry(freq_box, "Custom frequency points/decade", "custom_frequency_points_per_decade", 8)
+        self._entry(freq_box, "Custom minimum frequency points", "custom_minimum_frequency_points", 8)
         self._entry(freq_box, "Settle after freq [s]", "settling_after_freq_s", 4.0)
         self._entry(freq_box, "Settle after SMU [s]", "settling_after_smu_s", 1.0)
         self._entry(freq_box, "Max |Z'| before retry [ohm]", "max_abs_z_real_ohm", 100.0)
@@ -2335,6 +2419,8 @@ class MeasureApp(tk.Tk):
             freq_stop_hz=get_float("freq_stop_hz"),
             vac_vpp=get_float("vac_vpp"),
             custom_vdc_pv_step_size_v=get_float("custom_vdc_pv_step_size_v"),
+            custom_frequency_points_per_decade=get_int("custom_frequency_points_per_decade"),
+            custom_minimum_frequency_points=get_int("custom_minimum_frequency_points"),
             settling_after_freq_s=get_float("settling_after_freq_s"),
             settling_after_smu_s=get_float("settling_after_smu_s"),
             max_abs_z_real_ohm=get_float("max_abs_z_real_ohm"),
@@ -2654,7 +2740,7 @@ class MeasureApp(tk.Tk):
         self.canvas.draw_idle()
 
     def save_current_plot(self) -> None:
-        default = Path(self.output_dir_var.get() or ".") / f"measureapp_plot_{now_tag()}.png"
+        default = Path(self.output_dir_var.get() or ".") / f"pikapv_plot_{now_tag()}.png"
         path = filedialog.asksaveasfilename(
             initialfile=default.name,
             initialdir=str(default.parent),
@@ -2667,5 +2753,5 @@ class MeasureApp(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = MeasureApp()
+    app = PikaPVApp()
     app.mainloop()

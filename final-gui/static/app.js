@@ -37,16 +37,38 @@ let pendingStartPayload = null;
 let ledDutyTimer = null;
 let customSpeedProfileTimer = null;
 
-const advancedStorageKey = `measureapp-advanced-settings:${window.APP_STARTED_AT || "current"}`;
+const advancedStorageKey = `pikapv-advanced-settings:${window.APP_STARTED_AT || "current"}`;
 const customSpeedProfileKeys = new Set([
-  "custom_vdc_pv_step_size_v",
-  "settling_after_smu_s",
-  "settling_after_freq_s",
-  "lockin_time_constant_wait_s"
+  "custom_frequency_sweep_vdc_pv_step_size_v",
+  "custom_frequency_sweep_frequency_points_per_decade",
+  "custom_frequency_sweep_minimum_frequency_points",
+  "custom_frequency_sweep_settling_after_smu_s",
+  "custom_frequency_sweep_settling_after_freq_s",
+  "custom_frequency_sweep_lockin_time_constant_wait_s",
+  "custom_cv_vdc_pv_step_size_v",
+  "custom_cv_frequency_points_per_decade",
+  "custom_cv_minimum_frequency_points",
+  "custom_cv_settling_after_smu_s",
+  "custom_cv_settling_after_freq_s",
+  "custom_cv_lockin_time_constant_wait_s"
 ]);
 
 const advancedFieldLabels = {
+  custom_frequency_sweep_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
+  custom_frequency_sweep_frequency_points_per_decade: "Frequency points per decade",
+  custom_frequency_sweep_minimum_frequency_points: "Minimum frequency points",
+  custom_frequency_sweep_settling_after_smu_s: "Settling SMU change time [s]",
+  custom_frequency_sweep_settling_after_freq_s: "Settling FG change time [s]",
+  custom_frequency_sweep_lockin_time_constant_wait_s: "Lockin Time wait [s]",
+  custom_cv_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
+  custom_cv_frequency_points_per_decade: "Frequency points per decade",
+  custom_cv_minimum_frequency_points: "Minimum frequency points",
+  custom_cv_settling_after_smu_s: "Settling SMU change time [s]",
+  custom_cv_settling_after_freq_s: "Settling FG change time [s]",
+  custom_cv_lockin_time_constant_wait_s: "Lockin Time wait [s]",
   custom_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
+  custom_frequency_points_per_decade: "Frequency points per decade",
+  custom_minimum_frequency_points: "Minimum frequency points",
   settling_after_smu_s: "Settling SMU change time [s]",
   settling_after_freq_s: "Settling FG change time [s]",
   lockin_time_constant_wait_s: "Lockin Time wait [s]"
@@ -255,7 +277,8 @@ function buildAdvanced() {
   const sections = [
     ["Measurement speed mode", ["test_speed", "auto_smu_step_by_speed"]],
     ["LED settings", ["led_duty_cycle_percent"]],
-    ["Custom settling time", ["custom_vdc_pv_step_size_v", "settling_after_smu_s", "settling_after_freq_s", "lockin_time_constant_wait_s"]],
+    ["Custom frequency sweep", ["custom_frequency_sweep_vdc_pv_step_size_v", "custom_frequency_sweep_frequency_points_per_decade", "custom_frequency_sweep_minimum_frequency_points", "custom_frequency_sweep_settling_after_smu_s", "custom_frequency_sweep_settling_after_freq_s", "custom_frequency_sweep_lockin_time_constant_wait_s"]],
+    ["Custom CV curve", ["custom_cv_vdc_pv_step_size_v", "custom_cv_frequency_points_per_decade", "custom_cv_minimum_frequency_points", "custom_cv_settling_after_smu_s", "custom_cv_settling_after_freq_s", "custom_cv_lockin_time_constant_wait_s"]],
     ["SMU settings", ["auto_smu_range", "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "manual_smu_voltage_v", "target_vpv_v", "operating_point_mode"]],
     ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
     ["Lock In Amp settings", ["iac_measurement_sign", "iac_mag_cmd", "iac_phase_cmd", "idc_adc1_cmd", "vac_mag_cmd", "vac_phase_cmd", "configure_lockins", "lockin_sensitivity_cmd", "invert_voltage_phasor"]],
@@ -374,7 +397,8 @@ function renderAdvancedField(key) {
     const displayValue = isGpibAddressKey(key) ? shortGpibAddress(value) : value;
     const inputType = isGpibAddressKey(key) ? "number" : type;
     const label = advancedFieldLabels[key] || key.replaceAll("_", " ");
-    return `<label>${label}<input data-advanced="${key}" type="${inputType}" value="${displayValue}" ${checked}></label>`;
+    const disabled = key === "simulation_mode";
+    return `<label class="${disabled ? "disabled-field" : ""}">${label}<input data-advanced="${key}" type="${inputType}" value="${displayValue}" ${checked} ${disabled ? "disabled" : ""}></label>`;
 }
 
 function collectAdvanced() {

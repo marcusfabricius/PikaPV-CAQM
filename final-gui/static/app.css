@@ -27,6 +27,15 @@ body {
   padding: 22px;
 }
 
+.app-footer {
+  max-width: 1180px;
+  margin: 10px auto 28px;
+  padding: 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 .topbar, .actions, .result-actions, .panel-row {
   display: flex;
   align-items: center;

@@ -31,42 +31,87 @@ ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT = 4
 ESTIMATE_AUTO_SMU_SEARCH_READ_S = 0.15
 
 SPEED_PROFILE_ORDER = ["Custom", "Fast", "Medium", "Slow"]
-SPEED_PROFILE_DEFAULTS: Dict[str, Dict[str, float]] = {
+SPEED_PROFILE_KIND_ORDER = ["frequency_sweep", "cv_curve"]
+SPEED_PROFILE_KIND_FILE_KEYS = {
+    "frequency_sweep": "Frequency sweep",
+    "cv_curve": "CV curve",
+}
+SPEED_PROFILE_KIND_ALIASES = {
+    **{external: internal for internal, external in SPEED_PROFILE_KIND_FILE_KEYS.items()},
+    **{internal: internal for internal in SPEED_PROFILE_KIND_FILE_KEYS},
+    "frequency sweep": "frequency_sweep",
+    "Frequency Sweep": "frequency_sweep",
+    "CV Curve": "cv_curve",
+    "C-V curve": "cv_curve",
+    "C-V Curve": "cv_curve",
+}
+
+
+def speed_profile_block(
+    vdc_step: float,
+    points_per_decade: float,
+    minimum_points: float,
+    settle_smu: float,
+    settle_freq: float,
+    lockin_wait: float,
+) -> Dict[str, float]:
+    return {
+        "vdc_pv_step_size_v": vdc_step,
+        "frequency_points_per_decade": points_per_decade,
+        "minimum_frequency_points": minimum_points,
+        "settling_after_smu_s": settle_smu,
+        "settling_after_freq_s": settle_freq,
+        "lockin_time_constant_wait_s": lockin_wait,
+    }
+
+
+SPEED_PROFILE_DEFAULTS: Dict[str, Dict[str, Dict[str, float]]] = {
     "Custom": {
-        "vdc_pv_step_size_v": 0.025,
-        "settling_after_smu_s": 1.0,
-        "settling_after_freq_s": 4.0,
-        "lockin_time_constant_wait_s": 0.0,
+        "frequency_sweep": speed_profile_block(0.025, 8, 8, 1.0, 4.0, 0.0),
+        "cv_curve": speed_profile_block(0.025, 8, 8, 1.0, 4.0, 0.0),
     },
     "Fast": {
-        "vdc_pv_step_size_v": 0.05,
-        "settling_after_smu_s": 1.0,
-        "settling_after_freq_s": 2.6,
-        "lockin_time_constant_wait_s": 0.0,
+        "frequency_sweep": speed_profile_block(0.05, 4, 6, 1.0, 2.6, 0.0),
+        "cv_curve": speed_profile_block(0.05, 4, 6, 1.0, 2.6, 0.0),
     },
     "Medium": {
-        "vdc_pv_step_size_v": 0.025,
-        "settling_after_smu_s": 1.0,
-        "settling_after_freq_s": 4.0,
-        "lockin_time_constant_wait_s": 0.0,
+        "frequency_sweep": speed_profile_block(0.025, 8, 10, 1.0, 4.0, 0.0),
+        "cv_curve": speed_profile_block(0.025, 8, 10, 1.0, 4.0, 0.0),
     },
     "Slow": {
-        "vdc_pv_step_size_v": 0.01,
-        "settling_after_smu_s": 1.0,
-        "settling_after_freq_s": 5.6,
-        "lockin_time_constant_wait_s": 0.0,
+        "frequency_sweep": speed_profile_block(0.01, 16, 16, 1.0, 5.6, 0.0),
+        "cv_curve": speed_profile_block(0.01, 16, 16, 1.0, 5.6, 0.0),
     },
 }
 
-CUSTOM_SPEED_FIELD_TO_PROFILE_KEY = {
-    "custom_vdc_pv_step_size_v": "vdc_pv_step_size_v",
-    "settling_after_smu_s": "settling_after_smu_s",
-    "settling_after_freq_s": "settling_after_freq_s",
-    "lockin_time_constant_wait_s": "lockin_time_constant_wait_s",
+CUSTOM_SPEED_FIELD_TO_PROFILE_TARGET = {
+    "custom_frequency_sweep_vdc_pv_step_size_v": ("frequency_sweep", "vdc_pv_step_size_v"),
+    "custom_frequency_sweep_frequency_points_per_decade": ("frequency_sweep", "frequency_points_per_decade"),
+    "custom_frequency_sweep_minimum_frequency_points": ("frequency_sweep", "minimum_frequency_points"),
+    "custom_frequency_sweep_settling_after_smu_s": ("frequency_sweep", "settling_after_smu_s"),
+    "custom_frequency_sweep_settling_after_freq_s": ("frequency_sweep", "settling_after_freq_s"),
+    "custom_frequency_sweep_lockin_time_constant_wait_s": ("frequency_sweep", "lockin_time_constant_wait_s"),
+    "custom_cv_vdc_pv_step_size_v": ("cv_curve", "vdc_pv_step_size_v"),
+    "custom_cv_frequency_points_per_decade": ("cv_curve", "frequency_points_per_decade"),
+    "custom_cv_minimum_frequency_points": ("cv_curve", "minimum_frequency_points"),
+    "custom_cv_settling_after_smu_s": ("cv_curve", "settling_after_smu_s"),
+    "custom_cv_settling_after_freq_s": ("cv_curve", "settling_after_freq_s"),
+    "custom_cv_lockin_time_constant_wait_s": ("cv_curve", "lockin_time_constant_wait_s"),
+}
+
+LEGACY_CUSTOM_SPEED_FIELD_TO_PROFILE_TARGET = {
+    "custom_vdc_pv_step_size_v": ("frequency_sweep", "vdc_pv_step_size_v"),
+    "custom_frequency_points_per_decade": ("frequency_sweep", "frequency_points_per_decade"),
+    "custom_minimum_frequency_points": ("frequency_sweep", "minimum_frequency_points"),
+    "settling_after_smu_s": ("frequency_sweep", "settling_after_smu_s"),
+    "settling_after_freq_s": ("frequency_sweep", "settling_after_freq_s"),
+    "lockin_time_constant_wait_s": ("frequency_sweep", "lockin_time_constant_wait_s"),
 }
 
 SPEED_PROFILE_FILE_KEYS = {
     "vdc_pv_step_size_v": "Vdc_pv Step Size",
+    "frequency_points_per_decade": "Frequency points per decade",
+    "minimum_frequency_points": "Minimum frequency points",
     "settling_after_smu_s": "Settling SMU change time",
     "settling_after_freq_s": "Settling FG change time",
     "lockin_time_constant_wait_s": "Lockin Time wait",
@@ -79,7 +124,7 @@ SPEED_PROFILE_KEY_ALIASES = {
 
 
 def load_measurement_backend():
-    spec = importlib.util.spec_from_file_location("measureapp_backend", BASE_DIR / "gui-v1.py")
+    spec = importlib.util.spec_from_file_location("pikapv_backend", BASE_DIR / "gui-v1.py")
     if spec is None or spec.loader is None:
         raise RuntimeError("Could not load gui-v1.py measurement backend.")
     module = importlib.util.module_from_spec(spec)
@@ -197,7 +242,7 @@ SPEED_PROFILE_LOCK = threading.Lock()
 
 
 def terminal_log(message: str) -> None:
-    print(f"[MeasureApp Web] {message}", flush=True)
+    print(f"[PikaPV Web] {message}", flush=True)
 
 
 def configure_led_generator(settings: Any, source: str, raise_errors: bool = True) -> bool:
@@ -345,9 +390,12 @@ def normalize_gpib_address(value: Any) -> str:
     return f"GPIB0::{text}::INSTR"
 
 
-def default_speed_profiles() -> Dict[str, Dict[str, float]]:
+def default_speed_profiles() -> Dict[str, Dict[str, Dict[str, float]]]:
     return {
-        name: dict(SPEED_PROFILE_DEFAULTS[name])
+        name: {
+            kind: dict(SPEED_PROFILE_DEFAULTS[name][kind])
+            for kind in SPEED_PROFILE_KIND_ORDER
+        }
         for name in SPEED_PROFILE_ORDER
     }
 
@@ -367,6 +415,7 @@ def load_speed_profile_settings_file() -> Dict[str, Any]:
 def parse_simple_speed_profile_settings(text: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {"speed_profiles": {}}
     current_profile: Optional[str] = None
+    current_kind: Optional[str] = None
     for raw_line in text.splitlines():
         line = raw_line.split("#", 1)[0].rstrip()
         stripped = line.strip()
@@ -378,14 +427,23 @@ def parse_simple_speed_profile_settings(text: str) -> Dict[str, Any]:
         if indent == 2 and stripped.endswith(":"):
             current_profile = stripped[:-1].strip()
             result["speed_profiles"][current_profile] = {}
+            current_kind = None
+            continue
+        if indent == 4 and current_profile and stripped.endswith(":"):
+            raw_kind = stripped[:-1].strip()
+            current_kind = SPEED_PROFILE_KIND_ALIASES.get(raw_kind, raw_kind)
+            result["speed_profiles"][current_profile][current_kind] = {}
             continue
         if indent >= 4 and current_profile and ":" in stripped:
             key, value = stripped.split(":", 1)
-            result["speed_profiles"][current_profile][key.strip()] = parse_simple_yaml_scalar(value)
+            target = result["speed_profiles"][current_profile]
+            if current_kind and indent >= 6:
+                target = target.setdefault(current_kind, {})
+            target[key.strip()] = parse_simple_yaml_scalar(value)
     return result
 
 
-def configured_speed_profiles() -> Dict[str, Dict[str, float]]:
+def configured_speed_profiles() -> Dict[str, Dict[str, Dict[str, float]]]:
     profiles = default_speed_profiles()
     config = load_speed_profile_settings_file()
     section = config.get("speed_profiles", config)
@@ -397,16 +455,30 @@ def configured_speed_profiles() -> Dict[str, Dict[str, float]]:
         if not isinstance(raw_profile, dict):
             continue
         for raw_key, raw_value in raw_profile.items():
+            kind = SPEED_PROFILE_KIND_ALIASES.get(str(raw_key))
+            if kind in SPEED_PROFILE_KIND_ORDER and isinstance(raw_value, dict):
+                for raw_inner_key, raw_inner_value in raw_value.items():
+                    internal_key = SPEED_PROFILE_KEY_ALIASES.get(str(raw_inner_key), str(raw_inner_key))
+                    if internal_key not in SPEED_PROFILE_FILE_KEYS:
+                        continue
+                    value = safe_float(raw_inner_value)
+                    if value is not None:
+                        profiles[profile_name][kind][internal_key] = value
+                continue
+
+            # Backward compatibility for the old flat profile YAML: a flat value
+            # applies to both measurement-specific profile blocks.
             internal_key = SPEED_PROFILE_KEY_ALIASES.get(str(raw_key), str(raw_key))
             if internal_key not in SPEED_PROFILE_FILE_KEYS:
                 continue
             value = safe_float(raw_value)
             if value is not None:
-                profiles[profile_name][internal_key] = value
+                for kind_name in SPEED_PROFILE_KIND_ORDER:
+                    profiles[profile_name][kind_name][internal_key] = value
     return profiles
 
 
-def save_speed_profiles(profiles: Dict[str, Dict[str, float]]) -> None:
+def save_speed_profiles(profiles: Dict[str, Dict[str, Dict[str, float]]]) -> None:
     lines = [
         "# Speed profile defaults for web measurements.",
         "# Custom is edited from the Advanced settings panel.",
@@ -415,42 +487,109 @@ def save_speed_profiles(profiles: Dict[str, Dict[str, float]]) -> None:
     ]
     for profile_name in SPEED_PROFILE_ORDER:
         lines.append(f"  {profile_name}:")
-        for internal_key, external_key in SPEED_PROFILE_FILE_KEYS.items():
-            lines.append(f"    {external_key}: {float(profiles[profile_name][internal_key]):.12g}")
+        for kind in SPEED_PROFILE_KIND_ORDER:
+            lines.append(f"    {SPEED_PROFILE_KIND_FILE_KEYS[kind]}:")
+            profile = profiles.get(profile_name, {}).get(kind, SPEED_PROFILE_DEFAULTS[profile_name][kind])
+            for internal_key, external_key in SPEED_PROFILE_FILE_KEYS.items():
+                lines.append(f"      {external_key}: {float(profile[internal_key]):.12g}")
     with SPEED_PROFILE_LOCK:
         SPEED_PROFILE_SETTINGS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def sync_backend_speed_profiles(profiles: Dict[str, Dict[str, float]]) -> None:
-    for profile_name, profile in profiles.items():
+def profile_kind_for_mode(mode: str) -> str:
+    return "cv_curve" if mode == "complete_ac" else "frequency_sweep"
+
+
+def speed_profile_for(
+    profiles: Dict[str, Dict[str, Dict[str, float]]],
+    speed: str,
+    kind: str,
+) -> Dict[str, float]:
+    profile_name = speed if speed in SPEED_PROFILE_ORDER else "Medium"
+    kind_name = kind if kind in SPEED_PROFILE_KIND_ORDER else "frequency_sweep"
+    return profiles.get(profile_name, {}).get(kind_name, SPEED_PROFILE_DEFAULTS[profile_name][kind_name])
+
+
+def sync_backend_speed_profiles(
+    profiles: Dict[str, Dict[str, Dict[str, float]]],
+    kind: str = "frequency_sweep",
+) -> None:
+    for profile_name in SPEED_PROFILE_ORDER:
+        profile = speed_profile_for(profiles, profile_name, kind)
+        current = backend.SPEED_LEVELS.get(profile_name, backend.SPEED_LEVELS["Medium"])
         backend.AUTO_VDC_STEP_BY_SPEED[profile_name] = float(profile["vdc_pv_step_size_v"])
-    if "Custom" not in backend.SPEED_LEVELS:
-        backend.SPEED_LEVELS["Custom"] = backend.SpeedLevel("Custom", points_per_decade=4, repeats=2, settling_multiplier=1.0)
+        backend.SPEED_LEVELS[profile_name] = backend.SpeedLevel(
+            profile_name,
+            points_per_decade=max(1, int(round(float(profile["frequency_points_per_decade"])))),
+            minimum_frequency_points=max(1, int(round(float(profile["minimum_frequency_points"])))),
+            repeats=current.repeats,
+            settling_multiplier=1.0,
+        )
 
 
-def apply_custom_profile_to_settings(settings: Any, profiles: Dict[str, Dict[str, float]]) -> None:
-    custom = profiles["Custom"]
-    settings.custom_vdc_pv_step_size_v = float(custom["vdc_pv_step_size_v"])
-    settings.settling_after_smu_s = float(custom["settling_after_smu_s"])
-    settings.settling_after_freq_s = float(custom["settling_after_freq_s"])
-    settings.lockin_time_constant_wait_s = float(custom["lockin_time_constant_wait_s"])
+def set_custom_profile_settings(settings: Any, kind: str, profile: Dict[str, float]) -> None:
+    prefix = "custom_frequency_sweep" if kind == "frequency_sweep" else "custom_cv"
+    setattr(settings, f"{prefix}_vdc_pv_step_size_v", float(profile["vdc_pv_step_size_v"]))
+    setattr(settings, f"{prefix}_frequency_points_per_decade", int(round(float(profile["frequency_points_per_decade"]))))
+    setattr(settings, f"{prefix}_minimum_frequency_points", int(round(float(profile["minimum_frequency_points"]))))
+    setattr(settings, f"{prefix}_settling_after_smu_s", float(profile["settling_after_smu_s"]))
+    setattr(settings, f"{prefix}_settling_after_freq_s", float(profile["settling_after_freq_s"]))
+    setattr(settings, f"{prefix}_lockin_time_constant_wait_s", float(profile["lockin_time_constant_wait_s"]))
 
 
-def apply_speed_profile_to_settings(settings: Any, speed: str, profiles: Dict[str, Dict[str, float]]) -> None:
-    profile = profiles.get(speed, profiles.get("Medium", SPEED_PROFILE_DEFAULTS["Medium"]))
-    if speed == "Custom":
-        profile = {
-            "vdc_pv_step_size_v": float(settings.custom_vdc_pv_step_size_v),
-            "settling_after_smu_s": float(settings.settling_after_smu_s),
-            "settling_after_freq_s": float(settings.settling_after_freq_s),
-            "lockin_time_constant_wait_s": float(settings.lockin_time_constant_wait_s),
-        }
+def apply_effective_profile_to_settings(settings: Any, profile: Dict[str, float]) -> None:
     settings.settling_after_smu_s = float(profile["settling_after_smu_s"])
     settings.settling_after_freq_s = float(profile["settling_after_freq_s"])
     settings.lockin_time_constant_wait_s = float(profile["lockin_time_constant_wait_s"])
-    if speed == "Custom":
-        settings.custom_vdc_pv_step_size_v = float(profile["vdc_pv_step_size_v"])
+    settings.custom_vdc_pv_step_size_v = float(profile["vdc_pv_step_size_v"])
+    settings.custom_frequency_points_per_decade = int(round(float(profile["frequency_points_per_decade"])))
+    settings.custom_minimum_frequency_points = int(round(float(profile["minimum_frequency_points"])))
+
+
+def apply_custom_profile_to_settings(settings: Any, profiles: Dict[str, Dict[str, Dict[str, float]]]) -> None:
+    for kind in SPEED_PROFILE_KIND_ORDER:
+        set_custom_profile_settings(settings, kind, speed_profile_for(profiles, "Custom", kind))
+    apply_effective_profile_to_settings(settings, speed_profile_for(profiles, "Custom", "frequency_sweep"))
+
+
+def custom_profile_from_settings(settings: Any, kind: str) -> Dict[str, float]:
+    prefix = "custom_frequency_sweep" if kind == "frequency_sweep" else "custom_cv"
+    fallback = speed_profile_block(
+        float(getattr(settings, "custom_vdc_pv_step_size_v", 0.025)),
+        float(getattr(settings, "custom_frequency_points_per_decade", 8)),
+        float(getattr(settings, "custom_minimum_frequency_points", 8)),
+        float(getattr(settings, "settling_after_smu_s", 1.0)),
+        float(getattr(settings, "settling_after_freq_s", 4.0)),
+        float(getattr(settings, "lockin_time_constant_wait_s", 0.0)),
+    )
+    return {
+        "vdc_pv_step_size_v": float(getattr(settings, f"{prefix}_vdc_pv_step_size_v", fallback["vdc_pv_step_size_v"])),
+        "frequency_points_per_decade": float(getattr(settings, f"{prefix}_frequency_points_per_decade", fallback["frequency_points_per_decade"])),
+        "minimum_frequency_points": float(getattr(settings, f"{prefix}_minimum_frequency_points", fallback["minimum_frequency_points"])),
+        "settling_after_smu_s": float(getattr(settings, f"{prefix}_settling_after_smu_s", fallback["settling_after_smu_s"])),
+        "settling_after_freq_s": float(getattr(settings, f"{prefix}_settling_after_freq_s", fallback["settling_after_freq_s"])),
+        "lockin_time_constant_wait_s": float(getattr(settings, f"{prefix}_lockin_time_constant_wait_s", fallback["lockin_time_constant_wait_s"])),
+    }
+
+
+def apply_speed_profile_to_settings(
+    settings: Any,
+    speed: str,
+    profiles: Dict[str, Dict[str, Dict[str, float]]],
+    mode: str,
+) -> None:
+    kind = profile_kind_for_mode(mode)
+    profile = custom_profile_from_settings(settings, kind) if speed == "Custom" else speed_profile_for(profiles, speed, kind)
+    apply_effective_profile_to_settings(settings, profile)
     backend.AUTO_VDC_STEP_BY_SPEED[speed] = float(profile["vdc_pv_step_size_v"])
+    current = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
+    backend.SPEED_LEVELS[speed] = backend.SpeedLevel(
+        speed,
+        points_per_decade=max(1, int(round(float(profile["frequency_points_per_decade"])))),
+        minimum_frequency_points=max(1, int(round(float(profile["minimum_frequency_points"])))),
+        repeats=current.repeats,
+        settling_multiplier=1.0,
+    )
 
 
 def configured_defaults_section() -> Dict[str, Any]:
@@ -487,7 +626,7 @@ def default_settings_dict() -> Dict[str, Any]:
     return data
 
 
-def speed_profiles_dict() -> Dict[str, Dict[str, float]]:
+def speed_profiles_dict() -> Dict[str, Dict[str, Dict[str, float]]]:
     profiles = configured_speed_profiles()
     sync_backend_speed_profiles(profiles)
     return profiles
@@ -532,7 +671,7 @@ def settings_from_payload(payload: Dict[str, Any]) -> Any:
         if "cv_smu_step_v" in ac:
             settings.cv_smu_step_v = float(ac["cv_smu_step_v"])
     speed = str(payload.get("speed") or settings_data.get("test_speed") or default_speed())
-    apply_speed_profile_to_settings(settings, speed, speed_profiles)
+    apply_speed_profile_to_settings(settings, speed, speed_profiles, mode)
     return settings
 
 
@@ -546,7 +685,12 @@ def count_freq_points(settings: Any, speed: str) -> int:
     if math.isclose(settings.freq_start_hz, settings.freq_stop_hz, rel_tol=0.0, abs_tol=1e-12):
         return 1
     level = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
-    return len(backend.logspace_points(settings.freq_start_hz, settings.freq_stop_hz, level.points_per_decade))
+    return len(backend.logspace_points(
+        settings.freq_start_hz,
+        settings.freq_stop_hz,
+        level.points_per_decade,
+        level.minimum_frequency_points,
+    ))
 
 
 def calibration_vdc_span(calibration: Optional[Dict[str, Any]], fallback_span: float) -> float:
@@ -936,6 +1080,7 @@ def index():
         default_plots=DEFAULT_PLOTS,
         speed_profiles=speed_profiles_dict(),
         app_started_at=APP_STARTED_AT,
+        current_year=datetime.now().year,
     )
 
 
@@ -1040,17 +1185,28 @@ def save_custom_speed_profile():
     payload = request.get_json(force=True)
     settings_data = payload.get("settings", payload)
     profiles = configured_speed_profiles()
-    custom = dict(profiles["Custom"])
-    for settings_key, profile_key in CUSTOM_SPEED_FIELD_TO_PROFILE_KEY.items():
+    custom = {
+        kind: dict(speed_profile_for(profiles, "Custom", kind))
+        for kind in SPEED_PROFILE_KIND_ORDER
+    }
+    mappings = dict(CUSTOM_SPEED_FIELD_TO_PROFILE_TARGET)
+    if not any(settings_key in settings_data for settings_key in mappings):
+        mappings.update(LEGACY_CUSTOM_SPEED_FIELD_TO_PROFILE_TARGET)
+    for settings_key, (kind, profile_key) in mappings.items():
         if settings_key not in settings_data:
             continue
         value = safe_float(settings_data[settings_key])
         if value is not None:
             if profile_key == "vdc_pv_step_size_v" and value <= 0:
                 return jsonify({"ok": False, "error": "Custom Vdc_pv Step Size must be positive."}), 400
+            if profile_key in {"frequency_points_per_decade", "minimum_frequency_points"} and value <= 0:
+                return jsonify({"ok": False, "error": "Custom frequency point settings must be positive."}), 400
             if profile_key != "vdc_pv_step_size_v" and value < 0:
                 return jsonify({"ok": False, "error": "Custom settling times cannot be negative."}), 400
-            custom[profile_key] = value
+            if profile_key in {"frequency_points_per_decade", "minimum_frequency_points"}:
+                custom[kind][profile_key] = max(1, int(round(value)))
+            else:
+                custom[kind][profile_key] = value
     profiles["Custom"] = custom
     save_speed_profiles(profiles)
     sync_backend_speed_profiles(profiles)

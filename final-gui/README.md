@@ -1,4 +1,4 @@
-# MeasureApp Web GUI
+# PikaPV Web GUI
 
 Local browser GUI for solar-cell DC, impedance, C-V, and live lock-in measurements.
 
