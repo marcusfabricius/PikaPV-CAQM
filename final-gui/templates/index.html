@@ -62,7 +62,10 @@
             <span>Best <strong id="pikaBestScore">0 m</strong></span>
           </div>
         </div>
-        <canvas id="pikaGameCanvas" width="900" height="260" aria-label="PikaPV runner game"></canvas>
+        <div class="pika-game-stage">
+          <canvas id="pikaGameCanvas" width="900" height="260" aria-label="PikaPV runner game"></canvas>
+          <img id="pikaGameSprite" src="{{ url_for('static', filename='pikachu.gif') }}" alt="">
+        </div>
         <div class="wait-game-actions">
           <button class="secondary" id="pikaJumpButton" type="button">Jump</button>
         </div>

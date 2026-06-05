@@ -370,6 +370,17 @@ function updatePikaScores() {
   if (best) best.textContent = `${Math.max(pikaGame.bestM, Math.floor(pikaGame.distanceM))} m`;
 }
 
+function updatePikaSpritePosition() {
+  const sprite = $("pikaGameSprite");
+  if (!sprite) return false;
+  const p = pikaGame.player;
+  const bob = p.onGround && !pikaGame.gameOver ? Math.sin(pikaGame.distanceM * 1.4) * 2 : 0;
+  sprite.style.width = `${p.w}px`;
+  sprite.style.height = `${p.h}px`;
+  sprite.style.transform = `translate3d(${p.x}px, ${p.y + bob}px, 0)`;
+  return true;
+}
+
 function drawPikaGame() {
   const canvas = $("pikaGameCanvas");
   if (!canvas) return;
@@ -377,7 +388,7 @@ function drawPikaGame() {
   ctx.clearRect(0, 0, pikaGame.width, pikaGame.height);
   drawPikaBackground(ctx);
   pikaGame.obstacles.forEach(obstacle => drawSolarObstacle(ctx, obstacle));
-  drawPikachu(ctx);
+  if (!updatePikaSpritePosition()) drawPikachu(ctx);
   if (pikaGame.gameOver) drawPikaGameOver(ctx);
 }
 
