@@ -1026,7 +1026,7 @@ def run_measurement(payload: Dict[str, Any]) -> None:
         terminal_log(str(exc))
     except backend.StopMeasurement as exc:
         with STATE.lock:
-            STATE.status = "failed"
+            STATE.status = "completed"
             STATE.short_error = f"Stopped by safety limit: {user_facing_error(exc)}"
             STATE.completed_at = datetime.now().isoformat(timespec="seconds")
         terminal_log("Safety stop:\n" + traceback.format_exc())
