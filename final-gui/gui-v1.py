@@ -257,6 +257,8 @@ AUTO_VDC_STEP_BY_SPEED: Dict[str, float] = {
 }
 
 AUTO_SMU_SWEEP_CACHE: Dict[Tuple[str, float, float, float], List[float]] = {}
+AUTO_SMU_SWEEP_ROW_CACHE: Dict[Tuple[str, float, float, float], List[Dict[str, Any]]] = {}
+AUTO_SMU_SWEEP_MPP_READY_CACHE: set[Tuple[str, float, float, float]] = set()
 
 
 @dataclass
@@ -818,12 +820,57 @@ class MeasurementEngine:
         key = self.auto_smu_cache_key(speed_name, start_v, stop_v)
         return list(AUTO_SMU_SWEEP_CACHE.get(key, []))
 
+    def cached_auto_smu_mpp_rows(self, speed_name: str, start_v: float, stop_v: float) -> List[Dict[str, Any]]:
+        key = self.auto_smu_cache_key(speed_name, start_v, stop_v)
+        if key not in AUTO_SMU_SWEEP_MPP_READY_CACHE:
+            return []
+        return [
+            dict(row)
+            for row in AUTO_SMU_SWEEP_ROW_CACHE.get(key, [])
+            if start_v - 1e-9 <= float(row.get("smu_voltage_V", float("nan"))) <= stop_v + 1e-9
+        ]
+
     def remember_auto_smu_voltage(self, speed_name: str, start_v: float, stop_v: float, smu_v: float) -> None:
         key = self.auto_smu_cache_key(speed_name, start_v, stop_v)
         values = AUTO_SMU_SWEEP_CACHE.setdefault(key, [])
         rounded = round(float(smu_v), 6)
         if not values or abs(values[-1] - rounded) > 1e-9:
             values.append(rounded)
+
+    def remember_auto_smu_row(self, speed_name: str, start_v: float, stop_v: float, row: Dict[str, Any]) -> None:
+        self.remember_auto_smu_voltage(speed_name, start_v, stop_v, float(row["smu_voltage_V"]))
+        key = self.auto_smu_cache_key(speed_name, start_v, stop_v)
+        cached_rows = AUTO_SMU_SWEEP_ROW_CACHE.setdefault(key, [])
+        rounded = round(float(row["smu_voltage_V"]), 6)
+        stored_row = dict(row)
+        stored_row["smu_voltage_V"] = rounded
+        for index, cached in enumerate(cached_rows):
+            if abs(float(cached.get("smu_voltage_V", float("nan"))) - rounded) <= 1e-9:
+                cached_rows[index] = stored_row
+                break
+        else:
+            cached_rows.append(stored_row)
+        cached_rows.sort(key=lambda item: float(item["smu_voltage_V"]))
+
+    def mark_auto_smu_mpp_cache_ready(
+        self,
+        speed_name: str,
+        start_v: float,
+        stop_v: float,
+        rows: List[Dict[str, Any]],
+        stop_at_target_vpv: bool,
+    ) -> None:
+        if stop_at_target_vpv or not rows:
+            return
+        last = rows[-1]
+        reached_stop = float(last["smu_voltage_V"]) >= stop_v - 1e-9
+        reached_negative_current = (
+            self.settings.stop_if_idc_negative
+            and float(last["Idc_pv_A"]) < self.settings.negative_idc_limit_a
+        )
+        if reached_stop or reached_negative_current:
+            key = self.auto_smu_cache_key(speed_name, start_v, stop_v)
+            AUTO_SMU_SWEEP_MPP_READY_CACHE.add(key)
 
     def find_next_vdc_step(
         self,
@@ -914,6 +961,11 @@ class MeasurementEngine:
         )
         rows: List[Dict[str, Any]] = []
         point_index = 1
+
+        def finish() -> List[Dict[str, Any]]:
+            self.mark_auto_smu_mpp_cache_ready(speed_name, start_v, stop_v, rows, stop_at_target_vpv)
+            return rows
+
         cached_voltages = [
             smu_v for smu_v in self.cached_auto_smu_voltages(speed_name, start_v, stop_v)
             if start_v - 1e-9 <= smu_v <= stop_v + 1e-9
@@ -938,7 +990,7 @@ class MeasurementEngine:
                 "Pdc_pv_W": vdc * idc,
             }
             rows.append(current)
-            self.remember_auto_smu_voltage(speed_name, start_v, stop_v, smu_v)
+            self.remember_auto_smu_row(speed_name, start_v, stop_v, current)
             self.log(
                 f"{label} auto {point_index:>3} | SMU={smu_v:.6g} V | "
                 f"Vdc={vdc:.6e} V | Idc={idc:.6e} A | P={vdc * idc:.6e} W"
@@ -946,10 +998,10 @@ class MeasurementEngine:
             point_index += 1
             if stop_at_target_vpv and current["Vdc_pv_V"] >= self.settings.target_vpv_v:
                 self.log(f"{label} auto sweep stopped because target Vpv was reached.")
-                return rows
+                return finish()
             if self.settings.stop_if_idc_negative and current["Idc_pv_A"] < self.settings.negative_idc_limit_a:
                 self.log(f"{label} auto sweep stopped because Idc became negative.")
-                return rows
+                return finish()
 
         if current is None:
             raise RuntimeError("Automatic SMU sweep could not establish a starting point.")
@@ -967,7 +1019,7 @@ class MeasurementEngine:
                 break
             current = next_row
             rows.append(current)
-            self.remember_auto_smu_voltage(speed_name, start_v, stop_v, current["smu_voltage_V"])
+            self.remember_auto_smu_row(speed_name, start_v, stop_v, current)
             self.log(
                 f"{label} auto {point_index:>3} | SMU={current['smu_voltage_V']:.6g} V | "
                 f"Vdc={current['Vdc_pv_V']:.6e} V | Idc={current['Idc_pv_A']:.6e} A | "
@@ -976,7 +1028,7 @@ class MeasurementEngine:
             point_index += 1
             if point_index > 2000:
                 raise StopMeasurement("Automatic SMU step sweep exceeded 2000 points.")
-        return rows
+        return finish()
 
     def estimate_cv_duration(self, pre_summary: Optional[PreScanSummary] = None) -> Dict[str, str]:
         if pre_summary is None:
@@ -1001,6 +1053,8 @@ class MeasurementEngine:
     def run_smu_range_calibration(self) -> RunResult:
         self.validate()
         AUTO_SMU_SWEEP_CACHE.clear()
+        AUTO_SMU_SWEEP_ROW_CACHE.clear()
+        AUTO_SMU_SWEEP_MPP_READY_CACHE.clear()
         self.log("Automatic SMU step cache cleared for calibration.")
         output_dir = self.settings.output_dir
         ensure_dir(output_dir)
@@ -1728,14 +1782,26 @@ class MeasurementEngine:
 
             if self.settings.operating_point_mode == "MPP_SEARCH":
                 if self.auto_smu_step_enabled():
-                    measured_rows = self.adaptive_dc_sweep_rows(
-                        session,
+                    measured_rows = self.cached_auto_smu_mpp_rows(
                         speed_name,
                         self.settings.smu_start_v,
                         self.settings.smu_stop_v,
-                        "MPP",
-                        stop_at_target_vpv=False,
                     )
+                    reused_mpp_cache = bool(measured_rows)
+                    if reused_mpp_cache:
+                        self.log(
+                            f"Reusing {len(measured_rows)} cached automatic SMU DC points for MPP. "
+                            "Skipping voltage sweep and starting frequency sweep directly."
+                        )
+                    else:
+                        measured_rows = self.adaptive_dc_sweep_rows(
+                            session,
+                            speed_name,
+                            self.settings.smu_start_v,
+                            self.settings.smu_stop_v,
+                            "MPP",
+                            stop_at_target_vpv=False,
+                        )
                     for idx, measured in enumerate(measured_rows, start=1):
                         is_negative = measured["Idc_pv_A"] < self.settings.negative_idc_limit_a
                         is_candidate = (
@@ -1750,6 +1816,7 @@ class MeasurementEngine:
                             "is_mpp_candidate": is_candidate,
                             "is_negative_current_endpoint": is_negative,
                             "auto_smu_step_by_speed": True,
+                            "auto_smu_mpp_cache_reused": reused_mpp_cache,
                             "target_vdc_step_V": self.target_vdc_step_for_speed(speed_name),
                         })
                     candidates = [row for row in dc_rows if row["is_mpp_candidate"]]

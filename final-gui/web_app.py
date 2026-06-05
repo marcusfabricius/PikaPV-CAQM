@@ -594,6 +594,17 @@ def estimate_voltage_plan(settings: Any, speed: str, step_key: str, calibration:
     }
 
 
+def auto_smu_mpp_cache_ready(settings: Any, speed: str) -> bool:
+    target_step = float(backend.AUTO_VDC_STEP_BY_SPEED.get(speed, backend.AUTO_VDC_STEP_BY_SPEED["Medium"]))
+    cache_key = (
+        speed,
+        round(float(settings.smu_start_v), 6),
+        round(float(settings.smu_stop_v), 6),
+        round(target_step, 6),
+    )
+    return cache_key in getattr(backend, "AUTO_SMU_SWEEP_MPP_READY_CACHE", set())
+
+
 def estimate_voltage_points(settings: Any, speed: str, step_key: str, calibration: Optional[Dict[str, Any]] = None) -> int:
     return int(estimate_voltage_plan(settings, speed, step_key, calibration)["points"])
 
@@ -616,7 +627,21 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
         n_voltage = int(voltage_plan["points"])
         total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S) + float(voltage_plan["search_overhead_s"]) + overhead_s
     elif mode == "frequency_sweep":
-        if settings.operating_point_mode == "MPP_SEARCH":
+        if (
+            settings.operating_point_mode == "MPP_SEARCH"
+            and getattr(settings, "auto_smu_range", False)
+            and getattr(settings, "auto_smu_step_by_speed", False)
+            and auto_smu_mpp_cache_ready(settings, speed)
+        ):
+            n_voltage = 1
+            voltage_plan = {
+                "auto_step": True,
+                "cached_points": 1,
+                "missing_points": 0,
+                "search_overhead_s": 0.0,
+                "mpp_cache_reused": True,
+            }
+        elif settings.operating_point_mode == "MPP_SEARCH":
             voltage_plan = estimate_voltage_plan(settings, speed, "smu_step_v", calibration)
             n_voltage = int(voltage_plan["points"])
         else:
