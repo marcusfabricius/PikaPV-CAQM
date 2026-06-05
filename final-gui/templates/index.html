@@ -51,9 +51,22 @@
     </section>
 
     <section class="screen wait" id="waitingScreen">
-      <div class="spinner"></div>
-      <h2>Waiting for measurement to complete...</h2>
-      <p>The instruments continue in the background. Detailed logs stay in the terminal.</p>
+      <div class="wait-game">
+        <div class="wait-game-header">
+          <div>
+            <h2>Measurement running...</h2>
+            <p>The instruments continue in the background. Detailed logs stay in the terminal.</p>
+          </div>
+          <div class="wait-game-scores">
+            <span>Score <strong id="pikaScore">0 m</strong></span>
+            <span>Best <strong id="pikaBestScore">0 m</strong></span>
+          </div>
+        </div>
+        <canvas id="pikaGameCanvas" width="900" height="260" aria-label="PikaPV runner game"></canvas>
+        <div class="wait-game-actions">
+          <button class="secondary" id="pikaJumpButton" type="button">Jump</button>
+        </div>
+      </div>
     </section>
 
     <section class="screen" id="screen3">
@@ -149,6 +162,7 @@
     window.DEFAULT_PLOTS = {{ default_plots | tojson }};
     window.SPEED_PROFILES = {{ speed_profiles | tojson }};
     window.APP_STARTED_AT = {{ app_started_at | tojson }};
+    window.PIKACHU_GIF_SRC = {{ url_for('static', filename='pikachu.gif') | tojson }};
   </script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

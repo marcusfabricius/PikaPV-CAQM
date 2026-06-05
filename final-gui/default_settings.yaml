@@ -16,7 +16,7 @@ advanced_settings:
 
   # Output and simulation
   output_dir: measurement_output
-  simulation_mode: false
+  simulation_mode: true
 
   # SMU and DC sweep
   auto_smu_range: true

@@ -36,8 +36,28 @@ let pollTimer = null;
 let pendingStartPayload = null;
 let ledDutyTimer = null;
 let customSpeedProfileTimer = null;
+let pikaGameListenersReady = false;
 
 const advancedStorageKey = `pikapv-advanced-settings:${window.APP_STARTED_AT || "current"}`;
+const pikaGameBestScoreKey = "pikapv-runner-best-m";
+const pikaSprite = new Image();
+pikaSprite.src = window.PIKACHU_GIF_SRC || "/static/pikachu.gif";
+const pikaGame = {
+  running: false,
+  frame: 0,
+  lastTime: 0,
+  width: 900,
+  height: 260,
+  dpr: 1,
+  groundY: 210,
+  distanceM: 0,
+  bestM: loadPikaBestScore(),
+  speedPx: 290,
+  spawnIn: 0.9,
+  gameOver: false,
+  obstacles: [],
+  player: { x: 70, y: 0, w: 58, h: 46, vy: 0, onGround: true }
+};
 const customSpeedProfileKeys = new Set([
   "custom_frequency_sweep_vdc_pv_step_size_v",
   "custom_frequency_sweep_frequency_points_per_decade",
@@ -163,6 +183,315 @@ function showScreen(id) {
   document.querySelectorAll("[data-step-dot]").forEach(el => {
     el.classList.toggle("active", Number(el.dataset.stepDot) <= step);
   });
+  if (id === "waitingScreen") startPikaGame();
+  else stopPikaGame();
+}
+
+function loadPikaBestScore() {
+  try {
+    const value = Number(localStorage.getItem(pikaGameBestScoreKey) || 0);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function savePikaBestScore() {
+  const score = Math.floor(pikaGame.distanceM);
+  if (score <= pikaGame.bestM) return;
+  pikaGame.bestM = score;
+  try {
+    localStorage.setItem(pikaGameBestScoreKey, String(score));
+  } catch {
+    // The game keeps running even when localStorage is unavailable.
+  }
+}
+
+function setupPikaGameListeners() {
+  if (pikaGameListenersReady) return;
+  pikaGameListenersReady = true;
+  const canvas = $("pikaGameCanvas");
+  if (canvas) {
+    canvas.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      pikaJump();
+    });
+  }
+  const jumpButton = $("pikaJumpButton");
+  if (jumpButton) jumpButton.addEventListener("click", pikaJump);
+  document.addEventListener("keydown", event => {
+    if (!$("waitingScreen")?.classList.contains("active")) return;
+    if (![" ", "Spacebar", "ArrowUp", "w", "W"].includes(event.key) && !["Space", "KeyW"].includes(event.code)) return;
+    event.preventDefault();
+    pikaJump();
+  });
+  window.addEventListener("resize", () => {
+    if ($("waitingScreen")?.classList.contains("active")) resizePikaGameCanvas();
+  });
+}
+
+function startPikaGame() {
+  const canvas = $("pikaGameCanvas");
+  if (!canvas) return;
+  setupPikaGameListeners();
+  resizePikaGameCanvas();
+  resetPikaGame();
+  pikaGame.running = true;
+  pikaGame.lastTime = performance.now();
+  updatePikaScores();
+  if (pikaGame.frame) cancelAnimationFrame(pikaGame.frame);
+  pikaGame.frame = requestAnimationFrame(pikaGameLoop);
+}
+
+function stopPikaGame() {
+  savePikaBestScore();
+  pikaGame.running = false;
+  if (pikaGame.frame) {
+    cancelAnimationFrame(pikaGame.frame);
+    pikaGame.frame = 0;
+  }
+}
+
+function resizePikaGameCanvas() {
+  const canvas = $("pikaGameCanvas");
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, rect.width || 900);
+  const height = Math.max(210, rect.height || 260);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  pikaGame.width = width;
+  pikaGame.height = height;
+  pikaGame.dpr = dpr;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  pikaGame.groundY = height - 44;
+  if (pikaGame.player.onGround) pikaGame.player.y = pikaGame.groundY - pikaGame.player.h;
+}
+
+function resetPikaGame() {
+  const player = pikaGame.player;
+  pikaGame.distanceM = 0;
+  pikaGame.speedPx = 290;
+  pikaGame.spawnIn = 0.85;
+  pikaGame.gameOver = false;
+  pikaGame.obstacles = [];
+  player.x = Math.min(76, pikaGame.width * 0.18);
+  player.y = pikaGame.groundY - player.h;
+  player.vy = 0;
+  player.onGround = true;
+  updatePikaScores();
+}
+
+function pikaJump() {
+  if (!$("waitingScreen")?.classList.contains("active")) return;
+  if (pikaGame.gameOver) {
+    resetPikaGame();
+    return;
+  }
+  const player = pikaGame.player;
+  if (!player.onGround) return;
+  player.vy = -760;
+  player.onGround = false;
+}
+
+function pikaGameLoop(now) {
+  if (!pikaGame.running) return;
+  const dt = Math.min(0.034, Math.max(0, (now - pikaGame.lastTime) / 1000 || 0));
+  pikaGame.lastTime = now;
+  if (!pikaGame.gameOver) updatePikaGame(dt);
+  drawPikaGame();
+  pikaGame.frame = requestAnimationFrame(pikaGameLoop);
+}
+
+function updatePikaGame(dt) {
+  const player = pikaGame.player;
+  pikaGame.distanceM += dt * (pikaGame.speedPx / 28);
+  pikaGame.speedPx = Math.min(560, pikaGame.speedPx + dt * 7);
+  player.vy += 2200 * dt;
+  player.y += player.vy * dt;
+  if (player.y >= pikaGame.groundY - player.h) {
+    player.y = pikaGame.groundY - player.h;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  pikaGame.spawnIn -= dt;
+  if (pikaGame.spawnIn <= 0) {
+    spawnSolarObstacle();
+    const speedFactor = Math.min(1.45, pikaGame.speedPx / 320);
+    pikaGame.spawnIn = 0.95 + Math.random() * 0.75 / speedFactor;
+  }
+
+  pikaGame.obstacles.forEach(obstacle => {
+    obstacle.x -= pikaGame.speedPx * dt;
+  });
+  pikaGame.obstacles = pikaGame.obstacles.filter(obstacle => obstacle.x + obstacle.w > -20);
+  if (pikaGame.obstacles.some(obstacle => pikaCollision(player, obstacle))) {
+    pikaGame.gameOver = true;
+    savePikaBestScore();
+  }
+  updatePikaScores();
+}
+
+function spawnSolarObstacle() {
+  const h = 46 + Math.random() * 30;
+  const w = 34 + Math.random() * 18;
+  pikaGame.obstacles.push({
+    x: pikaGame.width + 18,
+    y: pikaGame.groundY - h,
+    w,
+    h,
+    voltage: Math.random() > 0.5 ? "HV" : "15 V"
+  });
+}
+
+function pikaCollision(player, obstacle) {
+  const p = {
+    x: player.x + 9,
+    y: player.y + 7,
+    w: player.w - 18,
+    h: player.h - 12
+  };
+  const o = {
+    x: obstacle.x + 4,
+    y: obstacle.y + 3,
+    w: obstacle.w - 8,
+    h: obstacle.h - 6
+  };
+  return p.x < o.x + o.w && p.x + p.w > o.x && p.y < o.y + o.h && p.y + p.h > o.y;
+}
+
+function updatePikaScores() {
+  const score = $("pikaScore");
+  const best = $("pikaBestScore");
+  if (score) score.textContent = `${Math.floor(pikaGame.distanceM)} m`;
+  if (best) best.textContent = `${Math.max(pikaGame.bestM, Math.floor(pikaGame.distanceM))} m`;
+}
+
+function drawPikaGame() {
+  const canvas = $("pikaGameCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, pikaGame.width, pikaGame.height);
+  drawPikaBackground(ctx);
+  pikaGame.obstacles.forEach(obstacle => drawSolarObstacle(ctx, obstacle));
+  drawPikachu(ctx);
+  if (pikaGame.gameOver) drawPikaGameOver(ctx);
+}
+
+function drawPikaBackground(ctx) {
+  const { width, height, groundY } = pikaGame;
+  ctx.fillStyle = "#fff9df";
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#eaf4ff";
+  ctx.fillRect(0, 0, width, groundY);
+  ctx.strokeStyle = "#d8b316";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, groundY + 0.5);
+  ctx.lineTo(width, groundY + 0.5);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(24, 32, 42, .08)";
+  ctx.lineWidth = 1;
+  const offset = -(pikaGame.distanceM * 12) % 80;
+  for (let x = offset; x < width; x += 80) {
+    ctx.beginPath();
+    ctx.moveTo(x, groundY + 16);
+    ctx.lineTo(x + 34, groundY + 16);
+    ctx.stroke();
+  }
+}
+
+function drawPikachu(ctx) {
+  const p = pikaGame.player;
+  const bob = p.onGround && !pikaGame.gameOver ? Math.sin(pikaGame.distanceM * 1.4) * 2 : 0;
+  if (pikaSprite.complete && pikaSprite.naturalWidth > 0) {
+    ctx.drawImage(pikaSprite, p.x, p.y + bob, p.w, p.h);
+    return;
+  }
+  ctx.fillStyle = "#ffd735";
+  roundedRect(ctx, p.x + 6, p.y + 8 + bob, p.w - 12, p.h - 10, 10);
+  ctx.fill();
+  ctx.fillStyle = "#2b2b2b";
+  ctx.fillRect(p.x + p.w - 18, p.y + 20 + bob, 4, 4);
+  ctx.fillStyle = "#e6483c";
+  ctx.beginPath();
+  ctx.arc(p.x + p.w - 13, p.y + 30 + bob, 4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawSolarObstacle(ctx, obstacle) {
+  const { x, y, w, h } = obstacle;
+  ctx.save();
+  ctx.fillStyle = "#244f7a";
+  ctx.strokeStyle = "#102a43";
+  ctx.lineWidth = 2;
+  roundedRect(ctx, x, y, w, h, 4);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(255,255,255,.58)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 3; i++) {
+    const gx = x + (w / 3) * i;
+    ctx.beginPath();
+    ctx.moveTo(gx, y + 5);
+    ctx.lineTo(gx, y + h - 5);
+    ctx.stroke();
+  }
+  for (let i = 1; i < 4; i++) {
+    const gy = y + (h / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(x + 5, gy);
+    ctx.lineTo(x + w - 5, gy);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#ffcf24";
+  ctx.beginPath();
+  ctx.moveTo(x + w * 0.58, y + 7);
+  ctx.lineTo(x + w * 0.38, y + h * 0.48);
+  ctx.lineTo(x + w * 0.57, y + h * 0.48);
+  ctx.lineTo(x + w * 0.41, y + h - 8);
+  ctx.lineTo(x + w * 0.70, y + h * 0.39);
+  ctx.lineTo(x + w * 0.51, y + h * 0.39);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#c93535";
+  ctx.font = "bold 10px Segoe UI, Arial, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(obstacle.voltage, x + w / 2, y - 5);
+  ctx.restore();
+}
+
+function drawPikaGameOver(ctx) {
+  const { width, height } = pikaGame;
+  ctx.fillStyle = "rgba(255, 255, 255, .78)";
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#18202a";
+  ctx.textAlign = "center";
+  ctx.font = "700 22px Segoe UI, Arial, sans-serif";
+  ctx.fillText("High voltage hit", width / 2, height / 2 - 8);
+  ctx.font = "14px Segoe UI, Arial, sans-serif";
+  ctx.fillText("Jump to restart", width / 2, height / 2 + 18);
+}
+
+function roundedRect(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
 }
 
 function setSelectedModeFromBackend(mode) {
