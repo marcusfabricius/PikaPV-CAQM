@@ -167,6 +167,7 @@ DEFAULT_PLOTS = {
     ],
     "complete_ac": [
         {"id": "cv", "label": "C-V", "x": "Vdc_pv", "y": "C", "dataset": "cv_curve", "yMin": 0, "filterBelowMin": True},
+        {"id": "cv_per_area", "label": "C-V over Area", "x": "Vdc_pv", "y": "C", "dataset": "cv_curve", "xLabel": "Vdc_pv [V]", "yLabel": "C / Area [F/cm\u00b2]", "yMin": 0, "filterBelowMin": True, "needsArea": True, "perArea": True},
         {"id": "cf_at_vdc", "label": "C over frequency at Vdc_pv", "x": "frequency", "y": "C", "dataset": "cv_frequency_sweeps", "xScale": "log", "yMin": 0, "filterBelowMin": True, "needsTargetVdc": True},
     ],
     "live_lockin": [
@@ -192,6 +193,7 @@ class RunState:
         self.live_rows: List[Dict[str, Any]] = []
         self.live_control: Dict[str, Any] = {}
         self.smu_calibration: Dict[str, Any] = {}
+        self.measurement_options: Dict[str, Any] = {}
         self.progress: Dict[str, Any] = {}
         self.stop_event = threading.Event()
         self.worker: Optional[threading.Thread] = None
@@ -232,6 +234,7 @@ class RunState:
                 "live_rows": self.live_rows[-300:],
                 "live_control": dict(self.live_control),
                 "smu_calibration": dict(self.smu_calibration),
+                "measurement_options": dict(self.measurement_options),
                 "progress": progress,
             }
 
@@ -1113,6 +1116,11 @@ def start():
         STATE.output_files = []
         STATE.combined_csv = None
         STATE.live_rows = []
+        STATE.measurement_options = {
+            "ac_frequency_mode": payload.get("complete_ac", {}).get("frequency_mode", "range"),
+            "freq_start_hz": settings.freq_start_hz,
+            "freq_stop_hz": settings.freq_stop_hz,
+        }
         STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings, existing_calibration)
         STATE.live_control = {
             "smu_voltage_v": settings.manual_smu_voltage_v,
@@ -1250,16 +1258,30 @@ def upload():
     dataset_name = path.stem
     inferred_mode = infer_mode_from_rows(rows)
     datasets = datasets_from_uploaded_rows(rows, dataset_name)
+    uploaded_frequencies = {
+        value
+        for row in rows
+        for value in [safe_float(row.get("f_ac_Hz", row.get("frequency_hz")))]
+        if value is not None
+    }
+    uploaded_frequency_mode = "single" if inferred_mode == "complete_ac" and len(uploaded_frequencies) == 1 else "range"
     with STATE.lock:
         STATE.status = "completed"
         STATE.mode = inferred_mode
+        STATE.measurement_options = {"ac_frequency_mode": uploaded_frequency_mode}
         STATE.datasets = datasets
         STATE.output_files = [str(path.resolve())]
         STATE.combined_csv = path.resolve()
         STATE.short_error = ""
         STATE.completed_at = datetime.now().isoformat(timespec="seconds")
     terminal_log(f"Uploaded CSV loaded for plotting: {path} | inferred mode={inferred_mode}")
-    return jsonify({"ok": True, "dataset": dataset_name, "mode": inferred_mode, "rows": len(rows)})
+    return jsonify({
+        "ok": True,
+        "dataset": dataset_name,
+        "mode": inferred_mode,
+        "frequency_mode": uploaded_frequency_mode,
+        "rows": len(rows),
+    })
 
 
 @app.get("/download/combined")

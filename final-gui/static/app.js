@@ -32,6 +32,7 @@ const modes = {
 let selectedMode = "standard_dc";
 let currentStatus = {};
 let plotConfigs = [];
+let selectedAcFrequencyMode = "range";
 let pollTimer = null;
 let pendingStartPayload = null;
 let ledDutyTimer = null;
@@ -92,7 +93,9 @@ const advancedFieldLabels = {
   settling_after_smu_s: "Settling SMU change time [s]",
   settling_after_freq_s: "Settling FG change time [s]",
   lockin_time_constant_wait_s: "Lockin Time wait [s]",
-  z_real_outlier_min_vdc_pv_v: "Z' retry minimum Vdc_pv [V]"
+  z_real_outlier_min_vdc_pv_v: "Z' retry minimum Vdc_pv [V]",
+  stop_if_idc_negative: "End measurement when Idc becomes negative",
+  negative_idc_limit_a: "Negative-current endpoint [A]"
 };
 
 function loadPersistedAdvancedSettings() {
@@ -523,6 +526,7 @@ function fillLiveControlInputs() {
 
 function resumeRunningMeasurement() {
   startPolling();
+  syncAcFrequencyModeFromStatus();
   setSelectedModeFromBackend(currentStatus.mode);
   if (currentStatus.mode === "live_lockin") {
     fillLiveControlInputs();
@@ -584,8 +588,12 @@ function updateConditionalOptions() {
       ${fieldHtml("Frequency start [Hz]", "freq_start_hz", settings.freq_start_hz)}
       ${fieldHtml("Frequency stop [Hz]", "freq_stop_hz", settings.freq_stop_hz)}
     </div>`;
+  $("acFrequencyMode").value = selectedAcFrequencyMode;
   $("operatingPoint").addEventListener("change", updateScreenOneVisibility);
-  $("acFrequencyMode").addEventListener("change", updateScreenOneVisibility);
+  $("acFrequencyMode").addEventListener("change", () => {
+    selectedAcFrequencyMode = $("acFrequencyMode").value;
+    updateScreenOneVisibility();
+  });
   updateScreenOneVisibility();
 }
 
@@ -815,7 +823,10 @@ function collectPayload() {
   });
   payload.frequency = freq;
   const ac = {};
-  if ($("acFrequencyMode")) ac.frequency_mode = $("acFrequencyMode").value;
+  if ($("acFrequencyMode")) {
+    selectedAcFrequencyMode = $("acFrequencyMode").value;
+    ac.frequency_mode = selectedAcFrequencyMode;
+  }
   document.querySelectorAll("#acOptions [data-setting]").forEach(input => {
     if (input.closest("[hidden]")) return;
     ac[input.dataset.setting] = input.value;
@@ -939,6 +950,7 @@ function startPolling() {
 async function refreshStatus() {
   const response = await fetch("/api/status");
   currentStatus = await response.json();
+  if (!$("screen1").classList.contains("active")) syncAcFrequencyModeFromStatus();
   $("statusText").textContent = `${currentStatus.status} ${currentStatus.mode ? " - " + currentStatus.mode : ""}`;
   $("resumeButton").hidden = currentStatus.status !== "running" || currentStatus.mode === "smu_calibration";
   $("resumeRunningButton").hidden = currentStatus.mode === "smu_calibration";
@@ -961,6 +973,12 @@ async function refreshStatus() {
   }
 }
 
+function syncAcFrequencyModeFromStatus() {
+  if (currentStatus.measurement_options?.ac_frequency_mode) {
+    selectedAcFrequencyMode = currentStatus.measurement_options.ac_frequency_mode;
+  }
+}
+
 function buildPlotConfig() {
   const count = $("plotCount");
   count.innerHTML = "";
@@ -973,7 +991,11 @@ function buildPlotConfig() {
 
 function availableDefaults() {
   const mode = window.DEFAULT_PLOTS[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
-  return window.DEFAULT_PLOTS[mode] || [];
+  const defaults = window.DEFAULT_PLOTS[mode] || [];
+  if (mode === "complete_ac" && selectedAcFrequencyMode === "single") {
+    return defaults.filter(plot => plot.id !== "cf_at_vdc");
+  }
+  return defaults;
 }
 
 function allVariableOptions() {
@@ -1003,7 +1025,16 @@ function updatePlotCardVisibility(card) {
   const defaultId = card.querySelector('[data-plot-field="default"]')?.value;
   const selectedDefault = availableDefaults().find(p => p.id === defaultId);
   const targetField = card.querySelector(".target-vdc-field");
+  const defaultAreaField = card.querySelector(".default-area-field");
+  const defaultAreaInput = card.querySelector('[data-plot-field="defaultArea"]');
+  const customPerArea = card.querySelector('[data-plot-field="perArea"]');
+  const customAreaField = card.querySelector(".custom-area-field");
+  const customAreaInput = card.querySelector('[data-plot-field="customArea"]');
   if (targetField) targetField.hidden = isCustom || !selectedDefault?.needsTargetVdc;
+  if (defaultAreaField) defaultAreaField.hidden = isCustom || !selectedDefault?.needsArea;
+  if (customAreaField) customAreaField.hidden = !isCustom || !customPerArea?.checked;
+  if (defaultAreaInput) defaultAreaInput.required = !isCustom && Boolean(selectedDefault?.needsArea);
+  if (customAreaInput) customAreaInput.required = isCustom && Boolean(customPerArea?.checked);
 }
 
 function renderPlotConfig() {
@@ -1023,16 +1054,20 @@ function renderPlotConfig() {
       <div class="default-fields">
         <label>Default<select data-plot-field="default">${defaults.map(x => `<option value="${x.id}">${x.label}</option>`).join("")}</select></label>
         <label class="target-vdc-field">Target Vdc_pv [V]<input data-plot-field="targetVdc" type="number" step="0.001" placeholder="closest measured"></label>
+        <label class="default-area-field">Solar-cell area [cm&sup2;]<input data-plot-field="defaultArea" type="number" min="0.000000001" step="any" placeholder="enter active area"></label>
       </div>
       <div class="custom-fields">
         <label>X-axis<select data-plot-field="x">${optionsHtml(vars)}</select></label>
         <label>Y-axis<select data-plot-field="y">${optionsHtml(vars)}</select></label>
         <label>X scale<select data-plot-field="xScale"><option>linear</option><option>log</option></select></label>
         <label>Y scale<select data-plot-field="yScale"><option>linear</option><option>log</option></select></label>
+        <label class="plot-option-check"><input data-plot-field="perArea" type="checkbox"> Normalize Y-axis by area</label>
+        <label class="custom-area-field">Solar-cell area [cm&sup2;]<input data-plot-field="customArea" type="number" min="0.000000001" step="any" placeholder="enter active area"></label>
       </div>`;
     card.querySelector('[data-plot-field="default"]').value = d.id || "";
     card.querySelector('[data-plot-field="type"]').addEventListener("change", () => updatePlotCardVisibility(card));
     card.querySelector('[data-plot-field="default"]').addEventListener("change", () => updatePlotCardVisibility(card));
+    card.querySelector('[data-plot-field="perArea"]').addEventListener("change", () => updatePlotCardVisibility(card));
     updatePlotCardVisibility(card);
     host.appendChild(card);
   }
@@ -1046,6 +1081,8 @@ function readPlotConfigs() {
       const cfg = { ...(availableDefaults().find(p => p.id === get("default")) || {}) };
       const targetInput = card.querySelector('[data-plot-field="targetVdc"]');
       if (targetInput && targetInput.value !== "") cfg.targetVdc = Number(targetInput.value);
+      const areaInput = card.querySelector('[data-plot-field="defaultArea"]');
+      if (cfg.needsArea && areaInput?.value !== "") cfg.areaCm2 = Number(areaInput.value);
       applyNyquistPlotSign(cfg);
       return cfg;
     }
@@ -1053,7 +1090,21 @@ function readPlotConfigs() {
     const ySelect = card.querySelector('[data-plot-field="y"]');
     const xLabel = xSelect.selectedOptions[0]?.textContent || get("x");
     const yLabel = ySelect.selectedOptions[0]?.textContent || get("y");
-    return { label: `${yLabel} over ${xLabel}`, x: get("x"), y: get("y"), xLabel, yLabel, xScale: get("xScale"), yScale: get("yScale"), custom: true };
+    const perArea = card.querySelector('[data-plot-field="perArea"]').checked;
+    const areaInput = card.querySelector('[data-plot-field="customArea"]');
+    const areaCm2 = areaInput?.value !== "" ? Number(areaInput.value) : undefined;
+    return {
+      label: `${yLabel}${perArea ? " / Area" : ""} over ${xLabel}`,
+      x: get("x"),
+      y: get("y"),
+      xLabel,
+      yLabel: perArea ? `${yLabel} / Area [per cm\u00b2]` : yLabel,
+      xScale: get("xScale"),
+      yScale: get("yScale"),
+      custom: true,
+      perArea,
+      areaCm2
+    };
   });
 }
 
@@ -1069,6 +1120,13 @@ function applyNyquistPlotSign(cfg) {
 }
 
 async function waitOrResults() {
+  const invalidAreaInput = [...document.querySelectorAll(".plot-card input:required")]
+    .find(input => !input.checkValidity());
+  if (invalidAreaInput) {
+    invalidAreaInput.reportValidity();
+    invalidAreaInput.focus();
+    return;
+  }
   await refreshStatus();
   plotConfigs = readPlotConfigs();
   if (currentStatus.status === "completed") {
@@ -1190,27 +1248,87 @@ function drawPlots(datasets) {
     const panel = document.createElement("div");
     panel.className = "plot-panel";
     const rows = rowsForPlot(datasets, cfg);
-    const suffix = cfg.actualVdc !== undefined ? ` closest Vdc_pv=${Number(cfg.actualVdc).toPrecision(4)} V` : "";
+    const targetSuffix = cfg.actualVdc !== undefined ? ` closest Vdc_pv=${Number(cfg.actualVdc).toPrecision(4)} V` : "";
+    const areaSuffix = cfg.perArea && validPlotArea(cfg) ? ` (Area=${displayNumber(cfg.areaCm2)} cm\u00b2)` : "";
+    const suffix = `${targetSuffix}${areaSuffix}`;
     panel.innerHTML = `<h2>${cfg.label || "Plot"}${suffix}</h2><canvas width="560" height="360"></canvas>`;
     host.appendChild(panel);
     drawChart(panel.querySelector("canvas"), rows, cfg);
   });
 }
 
+function validPlotArea(cfg) {
+  return Number.isFinite(Number(cfg.areaCm2)) && Number(cfg.areaCm2) > 0;
+}
+
 function numericPairs(rows, cfg) {
-  return rows.map(row => {
+  const points = rows.map(row => {
     const xKey = cfg.x;
     const yKey = cfg.y;
     const x = Number(resolveValue(row, xKey));
     let y = Number(resolveValue(row, yKey));
     if (cfg.nyquist) y *= nyquistYAxisSign();
+    if (cfg.perArea) y /= Number(cfg.areaCm2);
     return { x, y };
-  }).filter(p => {
-    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
-    if (cfg.filterBelowMin && cfg.xMin !== undefined && p.x < Number(cfg.xMin)) return false;
-    if (cfg.filterBelowMin && cfg.yMin !== undefined && p.y < Number(cfg.yMin)) return false;
-    return true;
-  });
+  }).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (!cfg.filterBelowMin || points.length < 2) {
+    return points.filter(p => pointMeetsPlotMinimums(p, cfg));
+  }
+
+  const clipped = [];
+  for (let index = 1; index < points.length; index++) {
+    const segment = clipSegmentToPlotMinimums(points[index - 1], points[index], cfg);
+    if (!segment) continue;
+    appendUniquePlotPoint(clipped, segment[0]);
+    appendUniquePlotPoint(clipped, segment[1]);
+  }
+  return clipped;
+}
+
+function pointMeetsPlotMinimums(point, cfg) {
+  if (cfg.filterBelowMin && cfg.xMin !== undefined && point.x < Number(cfg.xMin)) return false;
+  if (cfg.filterBelowMin && cfg.yMin !== undefined && point.y < Number(cfg.yMin)) return false;
+  return true;
+}
+
+function clipSegmentToPlotMinimums(start, end, cfg) {
+  let tStart = 0;
+  let tEnd = 1;
+  for (const [value, delta, minimum] of [
+    [start.x, end.x - start.x, cfg.xMin],
+    [start.y, end.y - start.y, cfg.yMin]
+  ]) {
+    if (minimum === undefined) continue;
+    const min = Number(minimum);
+    if (!Number.isFinite(min)) continue;
+    if (Math.abs(delta) <= 1e-15) {
+      if (value < min) return null;
+      continue;
+    }
+    const crossing = (min - value) / delta;
+    if (delta > 0) tStart = Math.max(tStart, crossing);
+    else tEnd = Math.min(tEnd, crossing);
+  }
+  if (tStart > tEnd || tEnd < 0 || tStart > 1) return null;
+  const firstT = Math.max(0, tStart);
+  const lastT = Math.min(1, tEnd);
+  return [
+    interpolatePlotPoint(start, end, firstT),
+    interpolatePlotPoint(start, end, lastT)
+  ];
+}
+
+function interpolatePlotPoint(start, end, t) {
+  return {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t
+  };
+}
+
+function appendUniquePlotPoint(points, point) {
+  const last = points[points.length - 1];
+  if (last && Math.abs(last.x - point.x) <= 1e-12 && Math.abs(last.y - point.y) <= 1e-12) return;
+  points.push(point);
 }
 
 function resolveValue(row, key) {
@@ -1242,6 +1360,54 @@ function niceTicks(min, max, count = 5) {
   const ticks = [];
   for (let value = start; value <= max + step * 0.5; value += step) ticks.push(value);
   return ticks.slice(0, count + 2);
+}
+
+function formatLogTick(actual) {
+  const abs = Math.abs(actual);
+  if (abs >= 1e9) return `${Number((actual / 1e9).toPrecision(3))}G`;
+  if (abs >= 1e6) return `${Number((actual / 1e6).toPrecision(3))}M`;
+  if (abs >= 1e3) return `${Number((actual / 1e3).toPrecision(3))}k`;
+  if (abs >= 0.001) return Number(actual.toPrecision(4)).toString();
+  return actual.toExponential(0);
+}
+
+function logarithmicTicks(minLog, maxLog, pixelSpan) {
+  if (!Number.isFinite(minLog) || !Number.isFinite(maxLog) || maxLog <= minLog) return [];
+  const span = maxLog - minLog;
+  const pixelsPerDecade = pixelSpan / span;
+  const minorMultipliers = pixelsPerDecade >= 95 ? [2, 3, 4, 5, 6, 7, 8, 9] : [2, 5];
+  const narrowMajorMultipliers = span < 0.45
+    ? new Set([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    : span < 1 ? new Set([1, 2, 5]) : new Set([1]);
+  const majorEvery = span > 7 ? Math.ceil(span / 7) : 1;
+  const ticks = [];
+  const firstExponent = Math.floor(minLog) - 1;
+  const lastExponent = Math.ceil(maxLog) + 1;
+
+  for (let exponent = firstExponent; exponent <= lastExponent; exponent++) {
+    const multipliers = [1, ...minorMultipliers];
+    multipliers.forEach(multiplier => {
+      const value = exponent + Math.log10(multiplier);
+      if (value < minLog - 1e-10 || value > maxLog + 1e-10) return;
+      const isDecade = multiplier === 1;
+      const labelTick = narrowMajorMultipliers.has(multiplier)
+        && (!isDecade || Math.abs(exponent % majorEvery) === 0);
+      ticks.push({
+        value,
+        major: isDecade || labelTick,
+        label: labelTick ? formatLogTick(multiplier * Math.pow(10, exponent)) : ""
+      });
+    });
+  }
+  return ticks.sort((a, b) => a.value - b.value);
+}
+
+function linearGridTicks(min, max, count, isLog = false) {
+  return niceTicks(min, max, count).map(value => ({
+    value,
+    major: true,
+    label: formatTick(value, isLog)
+  }));
 }
 
 function axisRange(values, forcedMin, isLog = false) {
@@ -1336,6 +1502,12 @@ function sizeCanvasToDisplay(canvas) {
 function drawChart(canvas, rows, cfg) {
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (cfg.perArea && !validPlotArea(cfg)) {
+    ctx.fillStyle = "#647181";
+    ctx.textAlign = "center";
+    ctx.fillText("Enter a positive solar-cell area to generate this plot.", canvas.width / 2, canvas.height / 2);
+    return;
+  }
   const points = numericPairs(rows, cfg);
   if (!points.length) {
     ctx.fillStyle = "#647181";
@@ -1365,30 +1537,39 @@ function drawChart(canvas, rows, cfg) {
 
   ctx.font = "11px Segoe UI";
   ctx.textBaseline = "middle";
-  let xTicks = niceTicks(minX, maxX, 6);
-  if (xRange.axisBreakAtZero) xTicks = [0, ...xTicks.filter(tick => tick > minX + 1e-12)];
-  const yTicks = niceTicks(minY, maxY, 6);
-  ctx.strokeStyle = "#edf0f4";
-  ctx.fillStyle = "#647181";
-  ctx.lineWidth = 1;
+  let xTicks = logX ? logarithmicTicks(minX, maxX, plotWidth) : linearGridTicks(minX, maxX, 6);
+  if (xRange.axisBreakAtZero) {
+    xTicks = [{ value: 0, major: true, label: "0" }, ...xTicks.filter(tick => tick.value > minX + 1e-12)];
+  }
+  const yTicks = logY ? logarithmicTicks(minY, maxY, plotHeight) : linearGridTicks(minY, maxY, 6);
   xTicks.forEach(tick => {
-    if (xRange.axisBreakAtZero && tick === 0) return;
-    const x = padLeft + ((tick - minX) / ((maxX - minX) || 1)) * plotWidth;
+    if (xRange.axisBreakAtZero && tick.value === 0) return;
+    const x = padLeft + ((tick.value - minX) / ((maxX - minX) || 1)) * plotWidth;
+    ctx.strokeStyle = tick.major ? "#e1e6ed" : "#f1f3f6";
+    ctx.lineWidth = tick.major ? 1 : 0.75;
     ctx.beginPath();
     ctx.moveTo(x, padTop);
     ctx.lineTo(x, padTop + plotHeight);
     ctx.stroke();
-    ctx.textAlign = "center";
-    ctx.fillText(formatTick(tick, logX), x, canvas.height - padBottom + 22);
+    if (tick.label) {
+      ctx.fillStyle = "#647181";
+      ctx.textAlign = x < padLeft + 16 ? "left" : x > padLeft + plotWidth - 16 ? "right" : "center";
+      ctx.fillText(tick.label, x, canvas.height - padBottom + 22);
+    }
   });
   yTicks.forEach(tick => {
-    const y = padTop + plotHeight - ((tick - minY) / ((maxY - minY) || 1)) * plotHeight;
+    const y = padTop + plotHeight - ((tick.value - minY) / ((maxY - minY) || 1)) * plotHeight;
+    ctx.strokeStyle = tick.major ? "#e1e6ed" : "#f1f3f6";
+    ctx.lineWidth = tick.major ? 1 : 0.75;
     ctx.beginPath();
     ctx.moveTo(padLeft, y);
     ctx.lineTo(padLeft + plotWidth, y);
     ctx.stroke();
-    ctx.textAlign = "right";
-    ctx.fillText(formatTick(tick, logY), padLeft - 8, y);
+    if (tick.label) {
+      ctx.fillStyle = "#647181";
+      ctx.textAlign = "right";
+      ctx.fillText(tick.label, padLeft - 8, y);
+    }
   });
 
   ctx.strokeStyle = "#d9dee6";
@@ -1434,11 +1615,11 @@ function drawChart(canvas, rows, cfg) {
   ctx.fillStyle = "#18202a";
   ctx.font = "12px Segoe UI";
   ctx.textAlign = "center";
-  ctx.fillText(`${cfg.xLabel || cfg.x || ""}${logX ? " (log)" : ""}`, padLeft + plotWidth / 2, canvas.height - 18);
+  ctx.fillText(`${cfg.xLabel || cfg.x || ""}${logX ? " (log scale)" : ""}`, padLeft + plotWidth / 2, canvas.height - 18);
   ctx.save();
   ctx.translate(16, padTop + plotHeight / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillText(`${cfg.yLabel || cfg.y || ""}${logY ? " (log)" : ""}`, 0, 0);
+  ctx.fillText(`${cfg.yLabel || cfg.y || ""}${logY ? " (log scale)" : ""}`, 0, 0);
   ctx.restore();
 }
 
@@ -1598,6 +1779,7 @@ async function uploadCsv() {
     return;
   }
   await refreshStatus();
+  if (data.frequency_mode) selectedAcFrequencyMode = data.frequency_mode;
   setSelectedModeFromBackend(data.mode || currentStatus.mode);
   buildPlotConfig();
   showScreen("screen2");

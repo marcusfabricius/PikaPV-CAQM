@@ -62,6 +62,30 @@ class UserStop(Exception):
     """Raised when the Stop button was pressed."""
 
 
+class NegativeCurrentEndpoint(Exception):
+    """Signals that a sweep reached its normal negative-current endpoint."""
+
+    def __init__(self, vdc: float, idc: float, idc_raw: float, frequency_hz: float):
+        super().__init__(
+            f"Negative-current endpoint reached: Idc_pv={idc:.6e} A at "
+            f"Vdc_pv={vdc:.6e} V and f={frequency_hz:.6g} Hz."
+        )
+        self.vdc = vdc
+        self.idc = idc
+        self.idc_raw = idc_raw
+        self.frequency_hz = frequency_hz
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "Vdc_pv_V": self.vdc,
+            "Idc_pv_A": self.idc,
+            "Idc_adc1_raw": self.idc_raw,
+            "Pdc_pv_W": self.vdc * self.idc,
+            "f_ac_Hz": self.frequency_hz,
+            "measurement_endpoint": "negative_current",
+        }
+
+
 def clean_instrument_reply(raw: str) -> str:
     return raw.replace("\x00", "").replace("\r", "").replace("\n", "").strip()
 
@@ -1402,12 +1426,14 @@ class MeasurementEngine:
                     self.settings.smu_start_v,
                     self.settings.smu_stop_v,
                     "IV",
+                    stop_at_target_vpv=False,
                 )
                 for idx, measured in enumerate(measured_rows, start=1):
                     rows.append({
                         "timestamp": iso_now(),
                         "point_index": idx,
                         **measured,
+                        "is_negative_current_endpoint": measured["Idc_pv_A"] < self.settings.negative_idc_limit_a,
                         "auto_smu_step_by_speed": True,
                         "target_vdc_step_V": self.target_vdc_step_for_speed(speed_name),
                     })
@@ -1425,19 +1451,21 @@ class MeasurementEngine:
                         "Idc_adc1_raw": idc_raw,
                         "Idc_pv_A": idc,
                         "Pdc_pv_W": power,
+                        "is_negative_current_endpoint": idc < self.settings.negative_idc_limit_a,
                         "auto_smu_step_by_speed": False,
                     })
                     self.log(f"IV {idx:>3}/{len(smu_points)} | SMU={smu_v:.4f} V | Vdc={vdc:.5e} V | Idc={idc:.5e} A | P={power:.5e} W")
 
-                    if vdc >= self.settings.target_vpv_v:
-                        self.log("IV sweep stopped because target Vpv was reached.")
-                        break
                     if self.settings.stop_if_idc_negative and idc < self.settings.negative_idc_limit_a:
                         self.log("IV sweep stopped because Idc became negative.")
                         break
 
             if not rows:
                 raise RuntimeError("No IV/PV points were recorded.")
+            if self.settings.stop_if_idc_negative and not any(row["Idc_pv_A"] < self.settings.negative_idc_limit_a for row in rows):
+                self.log(
+                    "WARNING: IV/PV sweep reached the configured SMU stop voltage before a negative-current endpoint was measured."
+                )
             candidates = [r for r in rows if r["Idc_pv_A"] >= self.settings.min_mpp_idc_pv_a and r["Vdc_pv_V"] >= self.settings.min_mpp_vdc_pv_v]
             mpp_row = max(candidates or rows, key=lambda r: r["Pdc_pv_W"])
             self.log("Maximum power point from IV sweep:")
@@ -1464,7 +1492,7 @@ class MeasurementEngine:
         point_index: int,
         total_points: int,
         base_row: Dict[str, Any],
-        abort_if_negative_idc: bool,
+        end_if_negative_idc: bool,
         rejected_rows: List[Dict[str, Any]],
         settling_s: float,
         remeasure_z_real_outliers: Optional[bool] = None,
@@ -1478,10 +1506,8 @@ class MeasurementEngine:
         for attempt in range(1, total_attempts + 1):
             self.check_stop()
             vdc, idc, idc_raw = session.read_dc()
-            if abort_if_negative_idc and idc < self.settings.negative_idc_limit_a:
-                raise StopMeasurement(
-                    f"Idc_pv became negative during impedance sweep: {idc:.6e} A < {self.settings.negative_idc_limit_a:.6e} A."
-                )
+            if end_if_negative_idc and idc < self.settings.negative_idc_limit_a:
+                raise NegativeCurrentEndpoint(vdc, idc, idc_raw, f_ac)
             ph = session.read_ac_phasors()
             iac_mag = ph["Iac_mag_corrected_A"]
             last_iac_mag = iac_mag
@@ -1638,6 +1664,7 @@ class MeasurementEngine:
         all_rows: List[Dict[str, Any]] = []
         cv_rows: List[Dict[str, Any]] = []
         rejected_rows: List[Dict[str, Any]] = []
+        negative_current_endpoint: Optional[NegativeCurrentEndpoint] = None
 
         session = VisaController(self.settings, self.log)
         try:
@@ -1685,7 +1712,34 @@ class MeasurementEngine:
                 self.check_stop()
                 vdc0, idc0, idc0_raw = session.set_smu_voltage_and_read_dc(smu_v)
                 if self.settings.stop_if_idc_negative and idc0 < self.settings.negative_idc_limit_a:
-                    self.log("CV sweep stopped because Idc became negative at voltage point.")
+                    negative_current_endpoint = NegativeCurrentEndpoint(vdc0, idc0, idc0_raw, freqs[0])
+                    cv_rows.append({
+                        "timestamp": iso_now(),
+                        "sweep_index": sweep_index,
+                        "smu_voltage_V": smu_v,
+                        "Vdc_pv_median_V": vdc0,
+                        "Vdc_pv_mean_V": vdc0,
+                        "Idc_pv_median_A": idc0,
+                        "Pdc_pv_W": vdc0 * idc0,
+                        "frequency_points_recorded": 0,
+                        "cv_speed_level": speed_name,
+                        "points_per_decade": level.points_per_decade,
+                        "repeats_per_frequency": cv_repeats,
+                        "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
+                        "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
+                        "measurement_endpoint": "negative_current",
+                        "C_final_median_F": float("nan"),
+                        "C_final_mean_F": float("nan"),
+                        "C_final_std_F": float("nan"),
+                        "filter_used_points": 0,
+                        "filter_candidate_points": 0,
+                        "filter_frequency_min_Hz": float("nan"),
+                        "filter_frequency_max_Hz": float("nan"),
+                    })
+                    self.log(
+                        "CV sweep reached its negative-current endpoint at the voltage point: "
+                        f"Vdc={vdc0:.6e} V | Idc={idc0:.6e} A. Finishing normally."
+                    )
                     break
                 if self.settings.stop_if_vdc_exceeds_max and vdc0 > self.settings.max_vdc_pv_v:
                     self.log("CV sweep stopped because Vdc exceeded configured max.")
@@ -1708,20 +1762,34 @@ class MeasurementEngine:
                             "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
                             "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                         }
-                        row = self.measure_impedance_point(
-                            session,
-                            f_ac,
-                            count,
-                            total_freq_points,
-                            base,
-                            abort_if_negative_idc=self.settings.stop_if_idc_negative,
-                            rejected_rows=rejected_rows,
-                            settling_s=settling_s,
-                            remeasure_z_real_outliers=False,
-                        )
+                        try:
+                            row = self.measure_impedance_point(
+                                session,
+                                f_ac,
+                                count,
+                                total_freq_points,
+                                base,
+                                end_if_negative_idc=self.settings.stop_if_idc_negative,
+                                rejected_rows=rejected_rows,
+                                settling_s=settling_s,
+                                remeasure_z_real_outliers=False,
+                            )
+                        except NegativeCurrentEndpoint as endpoint:
+                            negative_current_endpoint = endpoint
+                            self.log(
+                                "CV sweep reached its negative-current endpoint during the "
+                                f"frequency sweep: Vdc={endpoint.vdc:.6e} V | "
+                                f"Idc={endpoint.idc:.6e} A | f={endpoint.frequency_hz:.6g} Hz. "
+                                "Finishing with the measurements recorded so far."
+                            )
+                            break
                         if row is not None:
                             rows_for_voltage.append(row)
                             all_rows.append(row)
+                    if negative_current_endpoint is not None:
+                        break
+                endpoint_vdc = negative_current_endpoint.vdc if negative_current_endpoint is not None else vdc0
+                endpoint_idc = negative_current_endpoint.idc if negative_current_endpoint is not None else idc0
 
                 filt = self.filter_capacitance_rows(rows_for_voltage)
                 vdc_values = [r["Vdc_pv_V"] for r in rows_for_voltage if math.isfinite(r["Vdc_pv_V"])]
@@ -1730,16 +1798,17 @@ class MeasurementEngine:
                     "timestamp": iso_now(),
                     "sweep_index": sweep_index,
                     "smu_voltage_V": smu_v,
-                    "Vdc_pv_median_V": statistics.median(vdc_values) if vdc_values else vdc0,
-                    "Vdc_pv_mean_V": sum(vdc_values) / len(vdc_values) if vdc_values else vdc0,
-                    "Idc_pv_median_A": statistics.median(idc_values) if idc_values else idc0,
-                    "Pdc_pv_W": (statistics.median(vdc_values) if vdc_values else vdc0) * (statistics.median(idc_values) if idc_values else idc0),
+                    "Vdc_pv_median_V": statistics.median(vdc_values) if vdc_values else endpoint_vdc,
+                    "Vdc_pv_mean_V": sum(vdc_values) / len(vdc_values) if vdc_values else endpoint_vdc,
+                    "Idc_pv_median_A": statistics.median(idc_values) if idc_values else endpoint_idc,
+                    "Pdc_pv_W": (statistics.median(vdc_values) if vdc_values else endpoint_vdc) * (statistics.median(idc_values) if idc_values else endpoint_idc),
                     "frequency_points_recorded": len(rows_for_voltage),
                     "cv_speed_level": speed_name,
                     "points_per_decade": level.points_per_decade,
                     "repeats_per_frequency": cv_repeats,
                     "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
                     "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
+                    "measurement_endpoint": "negative_current" if negative_current_endpoint is not None else "",
                 }
                 if filt:
                     cv_row.update({
@@ -1770,20 +1839,29 @@ class MeasurementEngine:
                 save_rows(cv_rows, output_dir / f"cv_curve_{timestamp}.csv")
                 if rejected_rows:
                     save_rows(rejected_rows, output_dir / f"cv_rejected_impedance_outliers_{timestamp}.csv")
+                if negative_current_endpoint is not None:
+                    break
 
             detailed_csv = output_dir / f"cv_frequency_sweeps_{timestamp}.csv"
             cv_csv = output_dir / f"cv_curve_{timestamp}.csv"
             rejected_csv = output_dir / f"cv_rejected_impedance_outliers_{timestamp}.csv"
             save_rows(all_rows, detailed_csv)
             save_rows(cv_rows, cv_csv)
-            files = [detailed_csv, cv_csv]
+            files: List[Path] = []
+            if all_rows:
+                files.append(detailed_csv)
+            if cv_rows:
+                files.append(cv_csv)
             if rejected_rows:
                 save_rows(rejected_rows, rejected_csv)
                 files.append(rejected_csv)
             return RunResult(
                 datasets={"cv_curve": cv_rows, "cv_frequency_sweeps": all_rows},
                 output_files=files,
-                summary={"cv_speed_level": speed_name},
+                summary={
+                    "cv_speed_level": speed_name,
+                    "negative_current_endpoint": negative_current_endpoint.as_dict() if negative_current_endpoint else {},
+                },
             )
         finally:
             try:
@@ -1931,6 +2009,7 @@ class MeasurementEngine:
             session.set_smu_voltage_and_read_dc(operating_smu)
             self.log(f"Stage 2: Impedance frequency sweep at SMU={operating_smu:.6g} V.")
 
+            negative_current_endpoint: Optional[NegativeCurrentEndpoint] = None
             for idx, f_ac in enumerate(freqs, start=1):
                 base = {
                     "measurement_type": "FREQUENCY_SWEEP",
@@ -1944,20 +2023,36 @@ class MeasurementEngine:
                     "mpp_search_Idc_pv_A": operating_row["Idc_pv_A"] if self.settings.operating_point_mode == "MPP_SEARCH" else "",
                     "mpp_search_Pdc_pv_W": operating_row["Pdc_pv_W"] if self.settings.operating_point_mode == "MPP_SEARCH" else "",
                 }
-                row = self.measure_impedance_point(
-                    session,
-                    f_ac,
-                    idx,
-                    len(freqs),
-                    base,
-                    abort_if_negative_idc=self.settings.operating_point_mode == "MPP_SEARCH",
-                    rejected_rows=rejected_rows,
-                    settling_s=settling_s,
-                )
+                try:
+                    row = self.measure_impedance_point(
+                        session,
+                        f_ac,
+                        idx,
+                        len(freqs),
+                        base,
+                        end_if_negative_idc=self.settings.stop_if_idc_negative,
+                        rejected_rows=rejected_rows,
+                        settling_s=settling_s,
+                    )
+                except NegativeCurrentEndpoint as endpoint:
+                    negative_current_endpoint = endpoint
+                    dc_rows.append({
+                        "timestamp": iso_now(),
+                        "measurement_type": "FREQUENCY_SWEEP_ENDPOINT",
+                        "smu_voltage_V": operating_smu,
+                        **endpoint.as_dict(),
+                        "is_negative_current_endpoint": True,
+                    })
+                    self.log(
+                        "Frequency sweep reached its negative-current endpoint: "
+                        f"Vdc={endpoint.vdc:.6e} V | Idc={endpoint.idc:.6e} A | "
+                        f"f={endpoint.frequency_hz:.6g} Hz. Finishing with the measurements recorded so far."
+                    )
+                    break
                 if row is not None:
                     impedance_rows.append(row)
 
-            if not impedance_rows:
+            if not impedance_rows and negative_current_endpoint is None:
                 raise RuntimeError("No valid impedance points were measured.")
             if self.settings.operating_point_mode == "MPP_SEARCH":
                 self.log(f"MPP operating voltage was {operating_smu:.6g} V.")
@@ -1969,14 +2064,20 @@ class MeasurementEngine:
             rej_csv = output_dir / f"frequency_rejected_impedance_outliers_{timestamp}.csv"
             save_rows(dc_rows, dc_csv)
             save_rows(impedance_rows, imp_csv)
-            files = [dc_csv, imp_csv]
+            files = [dc_csv]
+            if impedance_rows:
+                files.append(imp_csv)
             if rejected_rows:
                 save_rows(rejected_rows, rej_csv)
                 files.append(rej_csv)
             return RunResult(
                 datasets={"frequency_dc": dc_rows, "frequency_sweep": impedance_rows},
                 output_files=files,
-                summary={"operating_point": operating_row, "frequency_speed_level": speed_name},
+                summary={
+                    "operating_point": operating_row,
+                    "frequency_speed_level": speed_name,
+                    "negative_current_endpoint": negative_current_endpoint.as_dict() if negative_current_endpoint else {},
+                },
             )
         finally:
             try:
