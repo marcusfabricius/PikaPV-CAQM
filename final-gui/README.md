@@ -162,6 +162,7 @@ Recorded variables:
 - `Z_mag`
 - `Phase_Z`
 - `C`
+- `Rj` endpoint estimate (`Z_real` at the lowest frequency minus `Z_real` at the highest frequency)
 - `Vac_pv`
 - `Iac_pv`
 - `Phase_Vac`
@@ -193,6 +194,8 @@ Frequency mode options:
 
 - Frequency range - uses `freq_start_hz` to `freq_stop_hz`.
 - Single frequency - uses one exact frequency.
+
+For custom plots of a frequency-dependent value over `Vdc_pv`, enter a target frequency. PikaPV selects the closest measured frequency for every voltage point and combines repeated readings at that frequency using their median.
 
 Recorded variables:
 

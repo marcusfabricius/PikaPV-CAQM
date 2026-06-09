@@ -65,7 +65,14 @@ class UserStop(Exception):
 class NegativeCurrentEndpoint(Exception):
     """Signals that a sweep reached its normal negative-current endpoint."""
 
-    def __init__(self, vdc: float, idc: float, idc_raw: float, frequency_hz: float):
+    def __init__(
+        self,
+        vdc: float,
+        idc: float,
+        idc_raw: float,
+        frequency_hz: float,
+        quality: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(
             f"Negative-current endpoint reached: Idc_pv={idc:.6e} A at "
             f"Vdc_pv={vdc:.6e} V and f={frequency_hz:.6g} Hz."
@@ -74,6 +81,7 @@ class NegativeCurrentEndpoint(Exception):
         self.idc = idc
         self.idc_raw = idc_raw
         self.frequency_hz = frequency_hz
+        self.quality = dict(quality or {})
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -83,6 +91,7 @@ class NegativeCurrentEndpoint(Exception):
             "Pdc_pv_W": self.vdc * self.idc,
             "f_ac_Hz": self.frequency_hz,
             "measurement_endpoint": "negative_current",
+            **self.quality,
         }
 
 
@@ -220,6 +229,41 @@ def capacitance_from_impedance(
     return c_uncorrected, y_complex.real, y_complex.imag
 
 
+def junction_resistance_from_rows(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    z_real_by_frequency: Dict[float, List[float]] = {}
+    for row in rows:
+        frequency = safe_log_value(row.get("f_ac_Hz"))
+        z_real = safe_log_value(row.get("Z_real_ohm"))
+        if frequency is None or z_real is None or frequency <= 0:
+            continue
+        z_real_by_frequency.setdefault(frequency, []).append(z_real)
+    if len(z_real_by_frequency) < 2:
+        return None
+
+    low_frequency = min(z_real_by_frequency)
+    high_frequency = max(z_real_by_frequency)
+    low_z_real = statistics.median(z_real_by_frequency[low_frequency])
+    high_z_real = statistics.median(z_real_by_frequency[high_frequency])
+    frequency_span_decades = math.log10(high_frequency / low_frequency)
+    r_junction = low_z_real - high_z_real
+    warnings = []
+    if frequency_span_decades < 1.0:
+        warnings.append("frequency span is less than one decade")
+    if r_junction < 0:
+        warnings.append("low-frequency Z_real is below high-frequency Z_real")
+    return {
+        "R_junction_ohm": r_junction,
+        "R_series_estimate_ohm": high_z_real,
+        "Rj_low_frequency_Hz": low_frequency,
+        "Rj_high_frequency_Hz": high_frequency,
+        "Rj_low_frequency_Z_real_ohm": low_z_real,
+        "Rj_high_frequency_Z_real_ohm": high_z_real,
+        "Rj_frequency_span_decades": frequency_span_decades,
+        "Rj_estimate_method": "low_frequency_Z_real_minus_high_frequency_Z_real",
+        "Rj_estimate_warning": "; ".join(warnings),
+    }
+
+
 def capacitance_scale_factor(unit: str) -> Tuple[float, str]:
     unit_l = unit.lower().replace("µ", "u")
     if unit_l == "f":
@@ -321,6 +365,10 @@ class Settings:
     smu_current_limit_a: float = 0.5
     idc_adc1_to_ampere: float = 1.0
     idc_measurement_sign: float = 1.0
+    dc_read_repeats: int = 3
+    dc_variation_warning_percent: float = 2.0
+    dc_vdc_variation_warning_floor_v: float = 0.001
+    dc_idc_variation_warning_floor_a: float = 0.02
 
     # Manual operating point for impedance sweep
     operating_point_mode: str = "MPP_SEARCH"  # MPP_SEARCH or MANUAL_SMU_VOLTAGE
@@ -526,6 +574,7 @@ class VisaController:
         self.fg: Any = None
         self.led_fg: Any = None
         self.smu: Any = None
+        self.last_dc_quality: Dict[str, Any] = {}
 
     def open(self, need_dmm=True, need_lockin_i=True, need_lockin_v=True, need_fg=True, need_smu=True, need_led_fg=True) -> None:
         if self.settings.simulation_mode:
@@ -730,12 +779,76 @@ class VisaController:
             )
         self.strict_write(self.smu, f"smua.source.levelv = {smu_voltage}", "SMU")
 
-    def read_dc(self) -> Tuple[float, float, float]:
-        vdc_pv = self.query_float(self.dmm, "READ?", "DMM")
-        idc_adc1_raw = self.query_float(self.lockin_i, self.settings.idc_adc1_cmd, "Lock-in current ADC1")
-        idc_pv = idc_adc1_raw * self.settings.idc_adc1_to_ampere * self.settings.idc_measurement_sign
-        self.check_dc_safety(vdc_pv, idc_pv)
-        return vdc_pv, idc_pv, idc_adc1_raw
+    def read_dc(self, repeats: Optional[int] = None) -> Tuple[float, float, float]:
+        sample_count = max(1, int(self.settings.dc_read_repeats if repeats is None else repeats))
+        vdc_samples: List[float] = []
+        idc_samples: List[float] = []
+        idc_raw_samples: List[float] = []
+        for _ in range(sample_count):
+            vdc_pv = self.query_float(self.dmm, "READ?", "DMM")
+            idc_adc1_raw = self.query_float(self.lockin_i, self.settings.idc_adc1_cmd, "Lock-in current ADC1")
+            idc_pv = idc_adc1_raw * self.settings.idc_adc1_to_ampere * self.settings.idc_measurement_sign
+            self.check_dc_safety(vdc_pv, idc_pv)
+            vdc_samples.append(vdc_pv)
+            idc_samples.append(idc_pv)
+            idc_raw_samples.append(idc_adc1_raw)
+
+        vdc_median = statistics.median(vdc_samples)
+        idc_median = statistics.median(idc_samples)
+        idc_raw_median = statistics.median(idc_raw_samples)
+        minimum_idc_index = min(range(sample_count), key=lambda index: idc_samples[index])
+        minimum_idc = idc_samples[minimum_idc_index]
+        vdc_range = max(vdc_samples) - min(vdc_samples)
+        idc_range = max(idc_samples) - min(idc_samples)
+        warning_percent = self.settings.dc_variation_warning_percent
+        vdc_allowed = max(
+            self.settings.dc_vdc_variation_warning_floor_v,
+            abs(vdc_median) * warning_percent / 100.0,
+        )
+        idc_allowed = max(
+            self.settings.dc_idc_variation_warning_floor_a,
+            abs(idc_median) * warning_percent / 100.0,
+        )
+        warning_reasons = []
+        if sample_count > 1 and vdc_range > vdc_allowed:
+            warning_reasons.append(f"Vdc range {vdc_range:.6e} V exceeds {vdc_allowed:.6e} V")
+        if sample_count > 1 and idc_range > idc_allowed:
+            warning_reasons.append(f"Idc range {idc_range:.6e} A exceeds {idc_allowed:.6e} A")
+        self.last_dc_quality = {
+            "dc_sample_count": sample_count,
+            "dc_aggregation": "median",
+            "Vdc_pv_sample_min_V": min(vdc_samples),
+            "Vdc_pv_sample_max_V": max(vdc_samples),
+            "Vdc_pv_sample_range_V": vdc_range,
+            "Vdc_pv_sample_spread_percent": vdc_range / max(abs(vdc_median), self.settings.dc_vdc_variation_warning_floor_v) * 100.0,
+            "Idc_pv_sample_min_A": min(idc_samples),
+            "Idc_pv_sample_max_A": max(idc_samples),
+            "Idc_pv_sample_range_A": idc_range,
+            "Idc_pv_sample_spread_percent": idc_range / max(abs(idc_median), self.settings.dc_idc_variation_warning_floor_a) * 100.0,
+            "Idc_adc1_sample_min_raw": min(idc_raw_samples),
+            "Idc_adc1_sample_max_raw": max(idc_raw_samples),
+            "negative_idc_detected": minimum_idc < self.settings.negative_idc_limit_a,
+            "negative_idc_sample_Vdc_pv_V": vdc_samples[minimum_idc_index],
+            "negative_idc_sample_Idc_pv_A": minimum_idc,
+            "negative_idc_sample_Idc_adc1_raw": idc_raw_samples[minimum_idc_index],
+            "dc_quality_warning": bool(warning_reasons),
+            "dc_quality_warning_reason": "; ".join(warning_reasons),
+        }
+        if warning_reasons:
+            self.log("WARNING: Unstable DC reading: " + "; ".join(warning_reasons))
+        return vdc_median, idc_median, idc_raw_median
+
+    def dc_quality_fields(self) -> Dict[str, Any]:
+        return dict(self.last_dc_quality)
+
+    def negative_dc_sample(self) -> Optional[Tuple[float, float, float]]:
+        if not self.last_dc_quality.get("negative_idc_detected"):
+            return None
+        return (
+            float(self.last_dc_quality["negative_idc_sample_Vdc_pv_V"]),
+            float(self.last_dc_quality["negative_idc_sample_Idc_pv_A"]),
+            float(self.last_dc_quality["negative_idc_sample_Idc_adc1_raw"]),
+        )
 
     def set_smu_voltage_and_read_dc(self, smu_voltage: float, wait_s: Optional[float] = None) -> Tuple[float, float, float]:
         self.set_smu_voltage(smu_voltage)
@@ -831,6 +944,12 @@ class MeasurementEngine:
             raise ValueError("IDC ADC1 to ampere scaling must be positive.")
         if self.settings.idc_measurement_sign not in (-1.0, 1.0):
             raise ValueError("IDC measurement sign must be +1 or -1.")
+        if self.settings.dc_read_repeats < 1:
+            raise ValueError("DC read repeats must be at least one.")
+        if self.settings.dc_variation_warning_percent < 0:
+            raise ValueError("DC variation warning percentage cannot be negative.")
+        if self.settings.dc_vdc_variation_warning_floor_v < 0 or self.settings.dc_idc_variation_warning_floor_a < 0:
+            raise ValueError("DC variation warning floors cannot be negative.")
         if self.settings.iac_measurement_sign not in (-1.0, 1.0):
             raise ValueError("IAC measurement sign must be +1 or -1.")
         if self.settings.nyquist_y_axis_sign not in (-1.0, 1.0):
@@ -992,6 +1111,7 @@ class MeasurementEngine:
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
                 "Pdc_pv_W": vdc * idc,
+                **session.dc_quality_fields(),
             }
             if vdc >= target_vdc or smu_v >= stop_v - 1e-12 or (
                 self.settings.stop_if_idc_negative and idc < self.settings.negative_idc_limit_a
@@ -1023,6 +1143,7 @@ class MeasurementEngine:
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
                 "Pdc_pv_W": vdc * idc,
+                **session.dc_quality_fields(),
             }
             if abs(vdc - target_vdc) < abs(best["Vdc_pv_V"] - target_vdc):
                 best = mid
@@ -1080,6 +1201,7 @@ class MeasurementEngine:
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
                 "Pdc_pv_W": vdc * idc,
+                **session.dc_quality_fields(),
             }
             rows.append(current)
             self.remember_auto_smu_row(speed_name, start_v, stop_v, current)
@@ -1172,6 +1294,7 @@ class MeasurementEngine:
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
                 "Pdc_pv_W": vdc * idc,
+                **session.dc_quality_fields(),
             }
             rows.append(row)
             self.log(f"Calibrate {phase} | SMU={smu_v:.6g} V | Vdc={vdc:.6e} V | Idc={idc:.6e} A")
@@ -1351,6 +1474,7 @@ class MeasurementEngine:
                     "Idc_adc1_raw": idc_raw,
                     "Idc_pv_A": idc,
                     "Pdc_pv_W": power,
+                    **session.dc_quality_fields(),
                 }
                 rows.append(row)
                 self.log(f"Pre-scan {idx:>3}/{len(points)} | SMU={smu_v:.4f} V | Vdc={vdc:.5e} V | Idc={idc:.5e} A")
@@ -1451,6 +1575,7 @@ class MeasurementEngine:
                         "Idc_adc1_raw": idc_raw,
                         "Idc_pv_A": idc,
                         "Pdc_pv_W": power,
+                        **session.dc_quality_fields(),
                         "is_negative_current_endpoint": idc < self.settings.negative_idc_limit_a,
                         "auto_smu_step_by_speed": False,
                     })
@@ -1506,8 +1631,16 @@ class MeasurementEngine:
         for attempt in range(1, total_attempts + 1):
             self.check_stop()
             vdc, idc, idc_raw = session.read_dc()
-            if end_if_negative_idc and idc < self.settings.negative_idc_limit_a:
-                raise NegativeCurrentEndpoint(vdc, idc, idc_raw, f_ac)
+            negative_sample = session.negative_dc_sample()
+            if end_if_negative_idc and negative_sample is not None:
+                negative_vdc, negative_idc, negative_idc_raw = negative_sample
+                raise NegativeCurrentEndpoint(
+                    negative_vdc,
+                    negative_idc,
+                    negative_idc_raw,
+                    f_ac,
+                    session.dc_quality_fields(),
+                )
             ph = session.read_ac_phasors()
             iac_mag = ph["Iac_mag_corrected_A"]
             last_iac_mag = iac_mag
@@ -1542,6 +1675,7 @@ class MeasurementEngine:
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
                 "Pdc_pv_W": vdc * idc,
+                **session.dc_quality_fields(),
                 "f_ac_Hz": f_ac,
                 "Vac_mag_raw_V": ph["Vac_mag_raw_V"],
                 "Vac_phase_raw_deg": ph["Vac_phase_raw_deg"],
@@ -1711,8 +1845,17 @@ class MeasurementEngine:
             for sweep_index, smu_v in enumerate(smu_points, start=1):
                 self.check_stop()
                 vdc0, idc0, idc0_raw = session.set_smu_voltage_and_read_dc(smu_v)
-                if self.settings.stop_if_idc_negative and idc0 < self.settings.negative_idc_limit_a:
-                    negative_current_endpoint = NegativeCurrentEndpoint(vdc0, idc0, idc0_raw, freqs[0])
+                voltage_dc_quality = session.dc_quality_fields()
+                negative_sample = session.negative_dc_sample()
+                if self.settings.stop_if_idc_negative and negative_sample is not None:
+                    negative_vdc, negative_idc, negative_idc_raw = negative_sample
+                    negative_current_endpoint = NegativeCurrentEndpoint(
+                        negative_vdc,
+                        negative_idc,
+                        negative_idc_raw,
+                        freqs[0],
+                        voltage_dc_quality,
+                    )
                     cv_rows.append({
                         "timestamp": iso_now(),
                         "sweep_index": sweep_index,
@@ -1721,6 +1864,7 @@ class MeasurementEngine:
                         "Vdc_pv_mean_V": vdc0,
                         "Idc_pv_median_A": idc0,
                         "Pdc_pv_W": vdc0 * idc0,
+                        **voltage_dc_quality,
                         "frequency_points_recorded": 0,
                         "cv_speed_level": speed_name,
                         "points_per_decade": level.points_per_decade,
@@ -1728,6 +1872,10 @@ class MeasurementEngine:
                         "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
                         "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                         "measurement_endpoint": "negative_current",
+                        "R_junction_ohm": float("nan"),
+                        "R_series_estimate_ohm": float("nan"),
+                        "Rj_low_frequency_Hz": float("nan"),
+                        "Rj_high_frequency_Hz": float("nan"),
                         "C_final_median_F": float("nan"),
                         "C_final_mean_F": float("nan"),
                         "C_final_std_F": float("nan"),
@@ -1738,7 +1886,7 @@ class MeasurementEngine:
                     })
                     self.log(
                         "CV sweep reached its negative-current endpoint at the voltage point: "
-                        f"Vdc={vdc0:.6e} V | Idc={idc0:.6e} A. Finishing normally."
+                        f"Vdc={negative_vdc:.6e} V | Idc={negative_idc:.6e} A. Finishing normally."
                     )
                     break
                 if self.settings.stop_if_vdc_exceeds_max and vdc0 > self.settings.max_vdc_pv_v:
@@ -1776,6 +1924,7 @@ class MeasurementEngine:
                             )
                         except NegativeCurrentEndpoint as endpoint:
                             negative_current_endpoint = endpoint
+                            voltage_dc_quality = dict(endpoint.quality)
                             self.log(
                                 "CV sweep reached its negative-current endpoint during the "
                                 f"frequency sweep: Vdc={endpoint.vdc:.6e} V | "
@@ -1792,6 +1941,7 @@ class MeasurementEngine:
                 endpoint_idc = negative_current_endpoint.idc if negative_current_endpoint is not None else idc0
 
                 filt = self.filter_capacitance_rows(rows_for_voltage)
+                rj_estimate = junction_resistance_from_rows(rows_for_voltage)
                 vdc_values = [r["Vdc_pv_V"] for r in rows_for_voltage if math.isfinite(r["Vdc_pv_V"])]
                 idc_values = [r["Idc_pv_A"] for r in rows_for_voltage if math.isfinite(r["Idc_pv_A"])]
                 cv_row: Dict[str, Any] = {
@@ -1802,6 +1952,7 @@ class MeasurementEngine:
                     "Vdc_pv_mean_V": sum(vdc_values) / len(vdc_values) if vdc_values else endpoint_vdc,
                     "Idc_pv_median_A": statistics.median(idc_values) if idc_values else endpoint_idc,
                     "Pdc_pv_W": (statistics.median(vdc_values) if vdc_values else endpoint_vdc) * (statistics.median(idc_values) if idc_values else endpoint_idc),
+                    **voltage_dc_quality,
                     "frequency_points_recorded": len(rows_for_voltage),
                     "cv_speed_level": speed_name,
                     "points_per_decade": level.points_per_decade,
@@ -1810,6 +1961,23 @@ class MeasurementEngine:
                     "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                     "measurement_endpoint": "negative_current" if negative_current_endpoint is not None else "",
                 }
+                if rj_estimate:
+                    cv_row.update(rj_estimate)
+                    self.log(
+                        f"Rj endpoint estimate | Vdc={cv_row['Vdc_pv_median_V']:.6e} V | "
+                        f"Rj={rj_estimate['R_junction_ohm']:.6e} ohm | "
+                        f"f_low={rj_estimate['Rj_low_frequency_Hz']:.6g} Hz | "
+                        f"f_high={rj_estimate['Rj_high_frequency_Hz']:.6g} Hz"
+                    )
+                else:
+                    cv_row.update({
+                        "R_junction_ohm": float("nan"),
+                        "R_series_estimate_ohm": float("nan"),
+                        "Rj_low_frequency_Hz": float("nan"),
+                        "Rj_high_frequency_Hz": float("nan"),
+                        "Rj_low_frequency_Z_real_ohm": float("nan"),
+                        "Rj_high_frequency_Z_real_ohm": float("nan"),
+                    })
                 if filt:
                     cv_row.update({
                         "C_final_median_F": filt["final_median_F"],
@@ -1890,6 +2058,7 @@ class MeasurementEngine:
                 "Idc_adc1_raw": idc_raw,
                 "Idc_pv_A": idc,
                 "Pdc_pv_W": power,
+                **session.dc_quality_fields(),
                 "is_mpp_candidate": is_candidate,
                 "is_negative_current_endpoint": is_negative,
             })
@@ -1915,6 +2084,7 @@ class MeasurementEngine:
             "Idc_adc1_raw": idc_raw,
             "Idc_pv_A": idc,
             "Pdc_pv_W": vdc * idc,
+            **session.dc_quality_fields(),
             "is_mpp_candidate": False,
             "is_negative_current_endpoint": idc < self.settings.negative_idc_limit_a,
             "operating_point_mode": "MANUAL_SMU_VOLTAGE",
@@ -2126,7 +2296,7 @@ class MeasurementEngine:
                     session.set_led_duty_cycle(active_led_duty)
                     self.log(f"Live monitor LED brightness set to {active_led_duty:.3g}%")
 
-                vdc_pv, idc_pv, idc_raw = session.read_dc()
+                vdc_pv, idc_pv, idc_raw = session.read_dc(repeats=1)
                 raw_v_value = session.query_float(session.lockin_v, "X.", "Lock-in 12 X")
                 raw_v_phase = session.query_float(session.lockin_v, "PHA.", "Lock-in 12 phase")
                 corrected_vpv = -raw_v_value

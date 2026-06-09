@@ -17,7 +17,7 @@ const modes = {
     title: "Complete AC measurement",
     examples: "C-V curves with a frequency range, plus impedance-related plots.",
     body: "Runs CV-style voltage points and frequency sweeps while preserving the backend filtering and outlier handling.",
-    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
+    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Rj", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
     plots: "C-V, C-f, impedance plots"
   },
   live_lockin: {
@@ -95,7 +95,11 @@ const advancedFieldLabels = {
   lockin_time_constant_wait_s: "Lockin Time wait [s]",
   z_real_outlier_min_vdc_pv_v: "Z' retry minimum Vdc_pv [V]",
   stop_if_idc_negative: "End measurement when Idc becomes negative",
-  negative_idc_limit_a: "Negative-current endpoint [A]"
+  negative_idc_limit_a: "Negative-current endpoint [A]",
+  dc_read_repeats: "DC samples per reading",
+  dc_variation_warning_percent: "DC variation warning [%]",
+  dc_vdc_variation_warning_floor_v: "Minimum Vdc warning range [V]",
+  dc_idc_variation_warning_floor_a: "Minimum Idc warning range [A]"
 };
 
 function loadPersistedAdvancedSettings() {
@@ -120,37 +124,38 @@ settings.test_speed = settings.test_speed || "Medium";
 
 const variableOptionsByMode = {
   standard_dc: [
-    ["Vdc_pv", "Vdc_pv_V"],
-    ["Idc_pv", "Idc_pv_A"],
-    ["Pdc_pv", "Pdc_pv_W"],
-    ["V_SMU", "smu_voltage_V"]
+    ["Vdc_pv", "Vdc_pv"],
+    ["Idc_pv", "Idc_pv"],
+    ["Pdc_pv", "Pdc_pv"],
+    ["V_SMU", "V_SMU"]
   ],
   frequency_sweep: [
-    ["frequency", "f_ac_Hz"],
-    ["Z_real", "Z_real_ohm"],
-    ["Z_imag", "Z_imag_ohm"],
-    ["Z_mag", "Z_magnitude_ohm"],
-    ["Phase_Z", "Z_phase_deg"],
-    ["C", "C_uncorrected_F"],
-    ["Vac_pv", "Vac_mag_corrected_V"],
-    ["Iac_pv", "Iac_mag_corrected_A"],
-    ["Phase_Vac", "Vac_phase_corrected_deg"],
-    ["Phase_Iac", "Iac_phase_corrected_deg"]
+    ["frequency", "frequency"],
+    ["Z_real", "Z_real"],
+    ["Z_imag", "Z_imag"],
+    ["Z_mag", "Z_mag"],
+    ["Phase_Z", "Phase_Z"],
+    ["C", "C"],
+    ["Vac_pv", "Vac_pv"],
+    ["Iac_pv", "Iac_pv"],
+    ["Phase_Vac", "Phase_Vac"],
+    ["Phase_Iac", "Phase_Iac"]
   ],
   complete_ac: [
-    ["frequency", "f_ac_Hz"],
-    ["Z_real", "Z_real_ohm"],
-    ["Z_imag", "Z_imag_ohm"],
-    ["Z_mag", "Z_magnitude_ohm"],
-    ["Phase_Z", "Z_phase_deg"],
-    ["C", "C_final_median_F"],
-    ["Vac_pv", "Vac_mag_corrected_V"],
-    ["Iac_pv", "Iac_mag_corrected_A"],
-    ["Phase_Vac", "Vac_phase_corrected_deg"],
-    ["Phase_Iac", "Iac_phase_corrected_deg"],
-    ["Vdc_pv", "Vdc_pv_median_V"],
-    ["Idc_pv", "Idc_pv_A"],
-    ["Pdc_pv", "Pdc_pv_W"]
+    ["frequency", "frequency"],
+    ["Z_real", "Z_real"],
+    ["Z_imag", "Z_imag"],
+    ["Z_mag", "Z_mag"],
+    ["Phase_Z", "Phase_Z"],
+    ["C", "C"],
+    ["Rj (endpoint estimate)", "Rj"],
+    ["Vac_pv", "Vac_pv"],
+    ["Iac_pv", "Iac_pv"],
+    ["Phase_Vac", "Phase_Vac"],
+    ["Phase_Iac", "Phase_Iac"],
+    ["Vdc_pv", "Vdc_pv"],
+    ["Idc_pv", "Idc_pv"],
+    ["Pdc_pv", "Pdc_pv"]
   ],
   live_lockin: [
     ["time_s", "time_s"],
@@ -172,11 +177,24 @@ const valueAliases = {
   Z_mag: ["Z_magnitude_ohm", "Z_mag_ohm"],
   Phase_Z: ["Z_phase_deg"],
   C: ["C_final_median_F", "C_uncorrected_F", "capacitance"],
+  Rj: ["R_junction_ohm"],
   Vac_pv: ["Vac_mag_corrected_V"],
   Iac_pv: ["Iac_mag_corrected_A"],
   Phase_Vac: ["Vac_phase_corrected_deg"],
   Phase_Iac: ["Iac_phase_corrected_deg"]
 };
+
+const acFrequencyDependentVariables = new Set([
+  "Z_real",
+  "Z_imag",
+  "Z_mag",
+  "Phase_Z",
+  "C",
+  "Vac_pv",
+  "Iac_pv",
+  "Phase_Vac",
+  "Phase_Iac"
+]);
 
 function $(id) { return document.getElementById(id); }
 
@@ -629,6 +647,7 @@ function buildAdvanced() {
     ["Custom frequency sweep", ["custom_frequency_sweep_vdc_pv_step_size_v", "custom_frequency_sweep_frequency_points_per_decade", "custom_frequency_sweep_minimum_frequency_points", "custom_frequency_sweep_settling_after_smu_s", "custom_frequency_sweep_settling_after_freq_s", "custom_frequency_sweep_lockin_time_constant_wait_s"]],
     ["Custom CV curve", ["custom_cv_vdc_pv_step_size_v", "custom_cv_frequency_points_per_decade", "custom_cv_minimum_frequency_points", "custom_cv_settling_after_smu_s", "custom_cv_settling_after_freq_s", "custom_cv_lockin_time_constant_wait_s"]],
     ["SMU settings", ["auto_smu_range", "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "manual_smu_voltage_v", "target_vpv_v", "operating_point_mode"]],
+    ["Measurement quality", ["dc_read_repeats", "dc_variation_warning_percent", "dc_vdc_variation_warning_floor_v", "dc_idc_variation_warning_floor_a"]],
     ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
     ["Lock In Amp settings", ["iac_measurement_sign", "iac_mag_cmd", "iac_phase_cmd", "idc_adc1_cmd", "vac_mag_cmd", "vac_phase_cmd", "configure_lockins", "lockin_sensitivity_cmd", "invert_voltage_phasor"]],
     ["GPIB addresses", ["dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "led_fg_addr", "smu_addr"]],
@@ -1008,7 +1027,9 @@ function allVariableOptions() {
     options.push({ label, value });
   }
   const mode = variableOptionsByMode[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
-  (variableOptionsByMode[mode] || []).forEach(([label, value]) => add(label, value));
+  (variableOptionsByMode[mode] || [])
+    .filter(([, value]) => !(mode === "complete_ac" && selectedAcFrequencyMode === "single" && value === "Rj"))
+    .forEach(([label, value]) => add(label, value));
   if (!variableOptionsByMode[mode]) Object.values(vars).forEach(list => list.forEach(v => add(v, v)));
   if (!options.length && modes[mode]) modes[mode].vars.forEach(v => add(v, v));
   return options;
@@ -1030,11 +1051,25 @@ function updatePlotCardVisibility(card) {
   const customPerArea = card.querySelector('[data-plot-field="perArea"]');
   const customAreaField = card.querySelector(".custom-area-field");
   const customAreaInput = card.querySelector('[data-plot-field="customArea"]');
+  const customTargetFrequencyField = card.querySelector(".custom-target-frequency-field");
+  const customTargetFrequencyInput = card.querySelector('[data-plot-field="targetFrequency"]');
+  const xVariable = card.querySelector('[data-plot-field="x"]')?.value;
+  const yVariable = card.querySelector('[data-plot-field="y"]')?.value;
+  const mode = window.DEFAULT_PLOTS[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
+  const needsTargetFrequency = isCustom
+    && mode === "complete_ac"
+    && selectedAcFrequencyMode !== "single"
+    && (
+      (xVariable === "Vdc_pv" && acFrequencyDependentVariables.has(yVariable))
+      || (yVariable === "Vdc_pv" && acFrequencyDependentVariables.has(xVariable))
+    );
   if (targetField) targetField.hidden = isCustom || !selectedDefault?.needsTargetVdc;
   if (defaultAreaField) defaultAreaField.hidden = isCustom || !selectedDefault?.needsArea;
   if (customAreaField) customAreaField.hidden = !isCustom || !customPerArea?.checked;
+  if (customTargetFrequencyField) customTargetFrequencyField.hidden = !needsTargetFrequency;
   if (defaultAreaInput) defaultAreaInput.required = !isCustom && Boolean(selectedDefault?.needsArea);
   if (customAreaInput) customAreaInput.required = isCustom && Boolean(customPerArea?.checked);
+  if (customTargetFrequencyInput) customTargetFrequencyInput.required = needsTargetFrequency;
 }
 
 function renderPlotConfig() {
@@ -1061,6 +1096,7 @@ function renderPlotConfig() {
         <label>Y-axis<select data-plot-field="y">${optionsHtml(vars)}</select></label>
         <label>X scale<select data-plot-field="xScale"><option>linear</option><option>log</option></select></label>
         <label>Y scale<select data-plot-field="yScale"><option>linear</option><option>log</option></select></label>
+        <label class="custom-target-frequency-field">Target frequency [Hz]<input data-plot-field="targetFrequency" type="number" min="0.000000001" step="any" value="${settings.freq_start_hz}" placeholder="closest measured"></label>
         <label class="plot-option-check"><input data-plot-field="perArea" type="checkbox"> Normalize Y-axis by area</label>
         <label class="custom-area-field">Solar-cell area [cm&sup2;]<input data-plot-field="customArea" type="number" min="0.000000001" step="any" placeholder="enter active area"></label>
       </div>`;
@@ -1068,6 +1104,8 @@ function renderPlotConfig() {
     card.querySelector('[data-plot-field="type"]').addEventListener("change", () => updatePlotCardVisibility(card));
     card.querySelector('[data-plot-field="default"]').addEventListener("change", () => updatePlotCardVisibility(card));
     card.querySelector('[data-plot-field="perArea"]').addEventListener("change", () => updatePlotCardVisibility(card));
+    card.querySelector('[data-plot-field="x"]').addEventListener("change", () => updatePlotCardVisibility(card));
+    card.querySelector('[data-plot-field="y"]').addEventListener("change", () => updatePlotCardVisibility(card));
     updatePlotCardVisibility(card);
     host.appendChild(card);
   }
@@ -1093,6 +1131,10 @@ function readPlotConfigs() {
     const perArea = card.querySelector('[data-plot-field="perArea"]').checked;
     const areaInput = card.querySelector('[data-plot-field="customArea"]');
     const areaCm2 = areaInput?.value !== "" ? Number(areaInput.value) : undefined;
+    const targetFrequencyInput = card.querySelector('[data-plot-field="targetFrequency"]');
+    const targetFrequency = targetFrequencyInput?.required && targetFrequencyInput.value !== ""
+      ? Number(targetFrequencyInput.value)
+      : undefined;
     return {
       label: `${yLabel}${perArea ? " / Area" : ""} over ${xLabel}`,
       x: get("x"),
@@ -1103,7 +1145,9 @@ function readPlotConfigs() {
       yScale: get("yScale"),
       custom: true,
       perArea,
-      areaCm2
+      areaCm2,
+      needsTargetFrequency: Number.isFinite(targetFrequency),
+      targetFrequency
     };
   });
 }
@@ -1219,9 +1263,19 @@ function frequencyOperatingPointRow(datasets) {
 }
 
 function rowsForPlot(datasets, cfg) {
-  let rows = cfg.dataset && datasets[cfg.dataset]
-    ? datasets[cfg.dataset]
-    : (Object.values(datasets).find(items => items.some(row => hasValue(row, cfg.x) && hasValue(row, cfg.y))) || []);
+  let rows;
+  if (cfg.dataset && datasets[cfg.dataset]) {
+    rows = datasets[cfg.dataset];
+  } else if (cfg.needsTargetFrequency) {
+    rows = Object.values(datasets).find(items => items.some(row =>
+      hasValue(row, cfg.x) && hasValue(row, cfg.y) && hasValue(row, "frequency")
+    )) || [];
+  } else {
+    rows = Object.values(datasets).find(items => items.some(row => hasValue(row, cfg.x) && hasValue(row, cfg.y))) || [];
+  }
+  if (cfg.needsTargetFrequency && Number.isFinite(cfg.targetFrequency)) {
+    rows = rowsAtClosestFrequencyPerVoltage(rows, cfg);
+  }
   if (cfg.needsTargetVdc && Number.isFinite(cfg.targetVdc)) {
     const candidates = rows
       .map(row => ({
@@ -1241,6 +1295,46 @@ function rowsForPlot(datasets, cfg) {
   return rows;
 }
 
+function medianNumber(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return NaN;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function rowsAtClosestFrequencyPerVoltage(rows, cfg) {
+  const groups = new Map();
+  rows.forEach((row, index) => {
+    if (!hasValue(row, cfg.x) || !hasValue(row, cfg.y) || !hasValue(row, "frequency")) return;
+    const groupValue = row.sweep_index ?? row.smu_voltage_V ?? row.V_SMU ?? row.SMU_V ?? resolveValue(row, "Vdc_pv");
+    const key = groupValue !== undefined && groupValue !== "" ? String(groupValue) : String(index);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+
+  const selectedFrequencies = [];
+  const selectedRows = [];
+  groups.forEach(groupRows => {
+    const closestFrequency = groupRows.reduce((best, row) => {
+      const frequency = Number(resolveValue(row, "frequency"));
+      return Math.abs(frequency - cfg.targetFrequency) < Math.abs(best - cfg.targetFrequency) ? frequency : best;
+    }, Number(resolveValue(groupRows[0], "frequency")));
+    const closestRows = groupRows.filter(row =>
+      Math.abs(Number(resolveValue(row, "frequency")) - closestFrequency) <= Math.max(1e-12, Math.abs(closestFrequency) * 1e-9)
+    );
+    const representative = { ...closestRows[0] };
+    representative[cfg.x] = medianNumber(closestRows.map(row => Number(resolveValue(row, cfg.x))));
+    representative[cfg.y] = medianNumber(closestRows.map(row => Number(resolveValue(row, cfg.y))));
+    representative.frequency = closestFrequency;
+    selectedFrequencies.push(closestFrequency);
+    selectedRows.push(representative);
+  });
+  cfg.actualFrequency = medianNumber(selectedFrequencies);
+  cfg.actualFrequencyMin = selectedFrequencies.length ? Math.min(...selectedFrequencies) : undefined;
+  cfg.actualFrequencyMax = selectedFrequencies.length ? Math.max(...selectedFrequencies) : undefined;
+  return selectedRows;
+}
+
 function drawPlots(datasets) {
   const host = $("plots");
   host.innerHTML = "";
@@ -1249,11 +1343,50 @@ function drawPlots(datasets) {
     panel.className = "plot-panel";
     const rows = rowsForPlot(datasets, cfg);
     const targetSuffix = cfg.actualVdc !== undefined ? ` closest Vdc_pv=${Number(cfg.actualVdc).toPrecision(4)} V` : "";
+    const frequencyVaries = Number.isFinite(cfg.actualFrequencyMin)
+      && Number.isFinite(cfg.actualFrequencyMax)
+      && Math.abs(cfg.actualFrequencyMax - cfg.actualFrequencyMin) > Math.max(1e-12, Math.abs(cfg.actualFrequency) * 1e-9);
+    const frequencySuffix = frequencyVaries
+      ? ` closest frequencies=${displayNumber(cfg.actualFrequencyMin)}-${displayNumber(cfg.actualFrequencyMax)} Hz`
+      : cfg.actualFrequency !== undefined ? ` closest frequency=${displayNumber(cfg.actualFrequency)} Hz` : "";
     const areaSuffix = cfg.perArea && validPlotArea(cfg) ? ` (Area=${displayNumber(cfg.areaCm2)} cm\u00b2)` : "";
-    const suffix = `${targetSuffix}${areaSuffix}`;
+    const suffix = `${targetSuffix}${frequencySuffix}${areaSuffix}`;
     panel.innerHTML = `<h2>${cfg.label || "Plot"}${suffix}</h2><canvas width="560" height="360"></canvas>`;
     host.appendChild(panel);
     drawChart(panel.querySelector("canvas"), rows, cfg);
+  });
+}
+
+function downloadAllPlots() {
+  const panels = [...document.querySelectorAll("#plots .plot-panel")]
+    .map(panel => ({
+      title: panel.querySelector("h2")?.textContent || "Plot",
+      canvas: panel.querySelector("canvas")
+    }))
+    .filter(item => item.canvas);
+  if (!panels.length) {
+    alert("No plots are available to download.");
+    return;
+  }
+
+  panels.forEach((item, index) => {
+    const safeTitle = item.title
+      .normalize("NFKD")
+      .replace(/[^\w.-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 100) || `plot_${index + 1}`;
+    const filename = `PikaPV_${safeTitle}.png`;
+    item.canvas.toBlob(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "image/png");
   });
 }
 
@@ -1797,6 +1930,7 @@ $("nextFromMode").addEventListener("click", startMeasurement);
 $("backToMode").addEventListener("click", () => showScreen("screen1"));
 $("nextFromPlots").addEventListener("click", waitOrResults);
 $("backToPlots").addEventListener("click", () => showScreen("screen2"));
+$("downloadAllPlots").addEventListener("click", downloadAllPlots);
 $("newRun").addEventListener("click", () => showScreen("screen1"));
 $("plotCount").addEventListener("change", renderPlotConfig);
 $("stopButton").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));

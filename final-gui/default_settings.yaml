@@ -37,6 +37,12 @@ advanced_settings:
   idc_adc1_to_ampere: 1.0
   idc_measurement_sign: 1.0
 
+  # DC measurement quality
+  dc_read_repeats: 3
+  dc_variation_warning_percent: 2.0
+  dc_vdc_variation_warning_floor_v: 0.001
+  dc_idc_variation_warning_floor_a: 0.02
+
   # Frequency sweep operating point
   operating_point_mode: MPP_SEARCH
   manual_smu_voltage_v: 12.5

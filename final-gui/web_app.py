@@ -29,6 +29,7 @@ ESTIMATE_FIXED_OVERHEAD_S = 4.0
 ESTIMATE_PER_VOLTAGE_OVERHEAD_S = 0.10
 ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT = 4
 ESTIMATE_AUTO_SMU_SEARCH_READ_S = 0.15
+ESTIMATE_EXTRA_DC_SAMPLE_S = 0.10
 
 SPEED_PROFILE_ORDER = ["Custom", "Fast", "Medium", "Slow"]
 SPEED_PROFILE_KIND_ORDER = ["frequency_sweep", "cv_curve"]
@@ -725,12 +726,13 @@ def estimate_voltage_plan(settings: Any, speed: str, step_key: str, calibration:
         estimated_points = max(2, int(math.ceil(usable_vdc_span / target_step)) + 1)
         cached_points = len(cached)
         missing_points = max(0, estimated_points - cached_points)
+        dc_repeat_overhead_s = max(0, int(getattr(settings, "dc_read_repeats", 1)) - 1) * ESTIMATE_EXTRA_DC_SAMPLE_S
         return {
             "points": max(1, cached_points, estimated_points),
             "auto_step": True,
             "cached_points": cached_points,
             "missing_points": missing_points,
-            "search_overhead_s": missing_points * ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT * ESTIMATE_AUTO_SMU_SEARCH_READ_S,
+            "search_overhead_s": missing_points * ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT * (ESTIMATE_AUTO_SMU_SEARCH_READ_S + dc_repeat_overhead_s),
         }
     return {
         "points": count_linear_points(settings.smu_start_v, settings.smu_stop_v, float(getattr(settings, step_key))),
@@ -762,7 +764,9 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
     settling_smu = max(0.0, float(settings.settling_after_smu_s))
     settling_freq = max(0.0, float(settings.settling_after_freq_s))
     lockin_wait = max(0.0, float(settings.lockin_time_constant_wait_s))
-    per_freq_s = settling_freq + lockin_wait + 0.15
+    dc_repeat_overhead_s = max(0, int(getattr(settings, "dc_read_repeats", 1)) - 1) * ESTIMATE_EXTRA_DC_SAMPLE_S
+    voltage_read_overhead_s = ESTIMATE_PER_VOLTAGE_OVERHEAD_S + dc_repeat_overhead_s
+    per_freq_s = settling_freq + lockin_wait + 0.15 + dc_repeat_overhead_s
     n_freq = count_freq_points(settings, speed)
     n_voltage = 1
     total_s = 1.0
@@ -772,7 +776,7 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
     if mode == "standard_dc":
         voltage_plan = estimate_voltage_plan(settings, speed, "smu_step_v", calibration)
         n_voltage = int(voltage_plan["points"])
-        total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S) + float(voltage_plan["search_overhead_s"]) + overhead_s
+        total_s = n_voltage * (settling_smu + voltage_read_overhead_s) + float(voltage_plan["search_overhead_s"]) + overhead_s
     elif mode == "frequency_sweep":
         if (
             settings.operating_point_mode == "MPP_SEARCH"
@@ -793,11 +797,11 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
             n_voltage = int(voltage_plan["points"])
         else:
             n_voltage = 1
-        total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S) + float(voltage_plan["search_overhead_s"]) + n_freq * per_freq_s + overhead_s
+        total_s = n_voltage * (settling_smu + voltage_read_overhead_s) + float(voltage_plan["search_overhead_s"]) + n_freq * per_freq_s + overhead_s
     elif mode == "complete_ac":
         voltage_plan = estimate_voltage_plan(settings, speed, "cv_smu_step_v", calibration)
         n_voltage = int(voltage_plan["points"])
-        total_s = n_voltage * (settling_smu + ESTIMATE_PER_VOLTAGE_OVERHEAD_S + n_freq * per_freq_s) + float(voltage_plan["search_overhead_s"]) + overhead_s
+        total_s = n_voltage * (settling_smu + voltage_read_overhead_s + n_freq * per_freq_s) + float(voltage_plan["search_overhead_s"]) + overhead_s
     elif mode == "live_lockin":
         return {}
     elif mode == "smu_calibration":
@@ -877,6 +881,8 @@ def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, 
                 combined["Z_imag"] = combined["Z_imag_ohm"]
             if "Z_mag" not in combined:
                 combined["Z_mag"] = combined.get("Z_magnitude_ohm", combined.get("Z_mag_ohm", ""))
+            if "Rj" not in combined and "R_junction_ohm" in combined:
+                combined["Rj"] = combined["R_junction_ohm"]
             if "Phase_Z" not in combined and "Z_phase_deg" in combined:
                 combined["Phase_Z"] = combined["Z_phase_deg"]
             if "Vac_pv" not in combined and "Vac_mag_corrected_V" in combined:
@@ -968,6 +974,50 @@ def datasets_from_uploaded_rows(rows: List[Dict[str, Any]], fallback_name: str) 
     return {fallback_name: rows}
 
 
+def add_derived_rj_to_complete_ac_datasets(
+    datasets: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    detailed_rows = datasets.get("cv_frequency_sweeps", [])
+    if not detailed_rows:
+        return datasets
+
+    def group_key(row: Dict[str, Any]) -> str:
+        for key in ("sweep_index", "smu_voltage_V", "V_SMU", "SMU_V"):
+            value = row.get(key)
+            if value not in (None, ""):
+                return f"{key}:{value}"
+        return ""
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in detailed_rows:
+        key = group_key(row)
+        if key:
+            grouped.setdefault(key, []).append(row)
+
+    estimates: Dict[str, Dict[str, Any]] = {}
+    for key, rows in grouped.items():
+        normalized = []
+        for row in rows:
+            frequency = safe_float(row.get("f_ac_Hz", row.get("frequency_hz", row.get("frequency"))))
+            z_real = safe_float(row.get("Z_real_ohm", row.get("Z_real")))
+            if frequency is not None and z_real is not None:
+                normalized.append({"f_ac_Hz": frequency, "Z_real_ohm": z_real})
+        estimate = backend.junction_resistance_from_rows(normalized)
+        if estimate is None:
+            continue
+        estimates[key] = estimate
+        for row in rows:
+            row.update(estimate)
+            row["Rj"] = estimate["R_junction_ohm"]
+
+    for row in datasets.get("cv_curve", []):
+        estimate = estimates.get(group_key(row))
+        if estimate:
+            row.update(estimate)
+            row["Rj"] = estimate["R_junction_ohm"]
+    return datasets
+
+
 def run_measurement(payload: Dict[str, Any]) -> None:
     mode = payload.get("mode", "standard_dc")
     speed = payload.get("speed", "Medium")
@@ -1012,6 +1062,8 @@ def run_measurement(payload: Dict[str, Any]) -> None:
         terminal_log(f"Starting {mode} measurement with {speed} speed.")
         engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback, live_control_getter)
         result = engine.run_selected(selected, speed)
+        if mode == "complete_ac":
+            add_derived_rj_to_complete_ac_datasets(result.datasets)
         combined = save_combined_csv(mode, speed, result.datasets, settings.output_dir)
         with STATE.lock:
             STATE.status = "completed"
@@ -1258,6 +1310,8 @@ def upload():
     dataset_name = path.stem
     inferred_mode = infer_mode_from_rows(rows)
     datasets = datasets_from_uploaded_rows(rows, dataset_name)
+    if inferred_mode == "complete_ac":
+        add_derived_rj_to_complete_ac_datasets(datasets)
     uploaded_frequencies = {
         value
         for row in rows

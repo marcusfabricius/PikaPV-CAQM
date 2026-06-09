@@ -11,11 +11,11 @@ speed_profiles:
       Settling FG change time: 4.0
       Lockin Time wait: 0.0
     CV curve:
-      Vdc_pv Step Size: 0.025
-      Frequency points per decade: 8
+      Vdc_pv Step Size: 0.02
+      Frequency points per decade: 4
       Minimum frequency points: 8
       Settling SMU change time: 1.0
-      Settling FG change time: 4.0
+      Settling FG change time: 3.0
       Lockin Time wait: 0.0
   Fast:
     Frequency sweep:
