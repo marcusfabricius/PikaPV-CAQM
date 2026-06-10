@@ -17,7 +17,7 @@ const modes = {
     title: "Complete AC measurement",
     examples: "C-V curves with a frequency range, plus impedance-related plots.",
     body: "Runs CV-style voltage points and frequency sweeps while preserving the backend filtering and outlier handling.",
-    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Rj", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
+    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Cj", "C_parallel", "Rj", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
     plots: "C-V, C-f, impedance plots"
   },
   live_lockin: {
@@ -148,7 +148,9 @@ const variableOptionsByMode = {
     ["Z_mag", "Z_mag"],
     ["Phase_Z", "Phase_Z"],
     ["C", "C"],
-    ["Rj (endpoint estimate)", "Rj"],
+    ["Cj (equivalent-circuit fit)", "Cj"],
+    ["C_parallel (per-frequency)", "C_parallel"],
+    ["Rj (equivalent-circuit fit)", "Rj"],
     ["Vac_pv", "Vac_pv"],
     ["Iac_pv", "Iac_pv"],
     ["Phase_Vac", "Phase_Vac"],
@@ -176,8 +178,10 @@ const valueAliases = {
   Z_imag: ["Z_imag_ohm"],
   Z_mag: ["Z_magnitude_ohm", "Z_mag_ohm"],
   Phase_Z: ["Z_phase_deg"],
-  C: ["C_final_median_F", "C_uncorrected_F", "capacitance"],
-  Rj: ["R_junction_ohm"],
+  C: ["C_junction_fit_F", "C_final_median_F", "C_uncorrected_F", "capacitance"],
+  Cj: ["C_junction_fit_F"],
+  C_parallel: ["C_parallel_median_F", "C_uncorrected_F"],
+  Rj: ["R_junction_fit_ohm", "R_junction_ohm"],
   Vac_pv: ["Vac_mag_corrected_V"],
   Iac_pv: ["Iac_mag_corrected_A"],
   Phase_Vac: ["Vac_phase_corrected_deg"],
@@ -190,6 +194,7 @@ const acFrequencyDependentVariables = new Set([
   "Z_mag",
   "Phase_Z",
   "C",
+  "C_parallel",
   "Vac_pv",
   "Iac_pv",
   "Phase_Vac",
@@ -1012,7 +1017,13 @@ function availableDefaults() {
   const mode = window.DEFAULT_PLOTS[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
   const defaults = window.DEFAULT_PLOTS[mode] || [];
   if (mode === "complete_ac" && selectedAcFrequencyMode === "single") {
-    return defaults.filter(plot => plot.id !== "cf_at_vdc");
+    return defaults
+      .filter(plot => plot.id !== "cf_at_vdc")
+      .map(plot => {
+        if (plot.id === "cv") return { ...plot, label: "Parallel C-V (single frequency)" };
+        if (plot.id === "cv_per_area") return { ...plot, label: "Parallel C-V over Area (single frequency)" };
+        return plot;
+      });
   }
   return defaults;
 }
@@ -1028,7 +1039,11 @@ function allVariableOptions() {
   }
   const mode = variableOptionsByMode[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
   (variableOptionsByMode[mode] || [])
-    .filter(([, value]) => !(mode === "complete_ac" && selectedAcFrequencyMode === "single" && value === "Rj"))
+    .filter(([, value]) => !(
+      mode === "complete_ac"
+      && selectedAcFrequencyMode === "single"
+      && ["Cj", "Rj"].includes(value)
+    ))
     .forEach(([label, value]) => add(label, value));
   if (!variableOptionsByMode[mode]) Object.values(vars).forEach(list => list.forEach(v => add(v, v)));
   if (!options.length && modes[mode]) modes[mode].vars.forEach(v => add(v, v));
@@ -1223,7 +1238,7 @@ function renderResultsMetadata(datasets, status, summary = {}) {
 
 function firstValue(row, keys) {
   for (const key of keys) {
-    if (row[key] !== undefined && row[key] !== "") return row[key];
+    if (isUsablePlotValue(row[key])) return row[key];
   }
   return "";
 }
@@ -1464,17 +1479,21 @@ function appendUniquePlotPoint(points, point) {
   points.push(point);
 }
 
+function isUsablePlotValue(value) {
+  if (value === undefined || value === null || value === "") return false;
+  return Number.isFinite(Number(value));
+}
+
 function resolveValue(row, key) {
-  if (row[key] !== undefined && row[key] !== "") return row[key];
+  if (isUsablePlotValue(row[key])) return row[key];
   for (const alias of valueAliases[key] || []) {
-    if (row[alias] !== undefined && row[alias] !== "") return row[alias];
+    if (isUsablePlotValue(row[alias])) return row[alias];
   }
   return undefined;
 }
 
 function hasValue(row, key) {
-  const value = resolveValue(row, key);
-  return value !== undefined && value !== "" && Number.isFinite(Number(value));
+  return isUsablePlotValue(resolveValue(row, key));
 }
 
 function niceTicks(min, max, count = 5) {

@@ -186,7 +186,7 @@ The terminal also prints capacitance for each frequency point.
 
 ### Complete AC Measurement
 
-Runs a C-V style measurement. For each SMU voltage point, it measures one or more AC frequencies and calculates impedance/capacitance.
+Runs a C-V style measurement. For each SMU voltage point, it measures one or more AC frequencies and calculates the complex impedance.
 
 With automatic SMU step size on, voltage points are spaced by `Vdc_pv`. Otherwise voltage points use `cv_smu_step_v`.
 
@@ -194,6 +194,10 @@ Frequency mode options:
 
 - Frequency range - uses `freq_start_hz` to `freq_stop_hz`.
 - Single frequency - uses one exact frequency.
+
+For a frequency range, PikaPV fits the complete spectrum to the solar-cell small-signal model `Rs + j*w*Ls + (Rj || Cj)` using complex nonlinear least squares. The default C-V result uses the fitted PN-junction capacitance `Cj`; fitted `Rj`, `Rs`, `Ls`, and fit-quality values are saved as well.
+
+The detailed frequency rows retain `C_uncorrected_F = Im(1/Z) / w`. This is the total measured parallel capacitance at that individual frequency, not the fitted PN-junction capacitance. The old median across frequencies is retained as `C_parallel_median_F` for diagnostics and as a fallback when a full fit is impossible, such as a single-frequency measurement. Single-frequency result plots are therefore labeled as parallel C-V plots; their capacitance can decrease when series resistance or inductance dominates and should not be compared directly with fitted `Cj` from the paper.
 
 For custom plots of a frequency-dependent value over `Vdc_pv`, enter a target frequency. PikaPV selects the closest measured frequency for every voltage point and combines repeated readings at that frequency using their median.
 
@@ -205,6 +209,9 @@ Recorded variables:
 - `Z_mag`
 - `Phase_Z`
 - `C`
+- `Cj`
+- `C_parallel`
+- `Rj`
 - `Vac_pv`
 - `Iac_pv`
 - `Phase_Vac`

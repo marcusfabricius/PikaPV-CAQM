@@ -53,7 +53,7 @@ advanced_settings:
   vac_vpp: 0.010
   fg_offset_v: 0.0
   fg_waveform: SIN
-  freq_start_hz: 5.0
+  freq_start_hz: 40.0
   freq_stop_hz: 10000.0
   min_iac_mag_a: 0.000000000001
 

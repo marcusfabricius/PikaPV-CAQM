@@ -8,7 +8,7 @@ Run:
     python gui-v1.py
 
 Required packages:
-    pip install pyvisa matplotlib
+    pip install pyvisa matplotlib scipy
 
 Notes:
     - PyVISA needs the correct VISA backend installed on the measurement PC.
@@ -40,6 +40,11 @@ try:
     import pyvisa  # type: ignore
 except Exception:  # pragma: no cover
     pyvisa = None
+
+try:
+    from scipy.optimize import least_squares  # type: ignore
+except Exception:  # pragma: no cover
+    least_squares = None
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
@@ -253,7 +258,9 @@ def junction_resistance_from_rows(rows: List[Dict[str, Any]]) -> Optional[Dict[s
         warnings.append("low-frequency Z_real is below high-frequency Z_real")
     return {
         "R_junction_ohm": r_junction,
+        "R_junction_endpoint_estimate_ohm": r_junction,
         "R_series_estimate_ohm": high_z_real,
+        "R_series_endpoint_estimate_ohm": high_z_real,
         "Rj_low_frequency_Hz": low_frequency,
         "Rj_high_frequency_Hz": high_frequency,
         "Rj_low_frequency_Z_real_ohm": low_z_real,
@@ -261,6 +268,112 @@ def junction_resistance_from_rows(rows: List[Dict[str, Any]]) -> Optional[Dict[s
         "Rj_frequency_span_decades": frequency_span_decades,
         "Rj_estimate_method": "low_frequency_Z_real_minus_high_frequency_Z_real",
         "Rj_estimate_warning": "; ".join(warnings),
+    }
+
+
+def equivalent_circuit_fit_from_rows(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fit Rs + j*w*Ls + (Rj || Cj) to a complete impedance spectrum."""
+    if least_squares is None:
+        return None
+
+    values_by_frequency: Dict[float, Dict[str, List[float]]] = {}
+    positive_raw_capacitances: List[float] = []
+    for row in rows:
+        frequency = safe_log_value(row.get("f_ac_Hz"))
+        z_real = safe_log_value(row.get("Z_real_ohm"))
+        z_imag = safe_log_value(row.get("Z_imag_ohm"))
+        raw_capacitance = safe_log_value(row.get("C_uncorrected_F"))
+        if frequency is None or z_real is None or z_imag is None or frequency <= 0:
+            continue
+        bucket = values_by_frequency.setdefault(frequency, {"z_real": [], "z_imag": []})
+        bucket["z_real"].append(z_real)
+        bucket["z_imag"].append(z_imag)
+        if raw_capacitance is not None and raw_capacitance > 0:
+            positive_raw_capacitances.append(raw_capacitance)
+
+    if len(values_by_frequency) < 4:
+        return None
+
+    spectrum = [
+        (
+            frequency,
+            statistics.median(values["z_real"]),
+            statistics.median(values["z_imag"]),
+        )
+        for frequency, values in sorted(values_by_frequency.items())
+    ]
+    z_real_values = [point[1] for point in spectrum]
+    z_magnitudes = [math.hypot(point[1], point[2]) for point in spectrum]
+
+    lower = [1e-9, 1e-9, 1e-12, 1e-12]
+    upper = [1e5, 1e7, 10.0, 10.0]
+    rs_initial = max(lower[0], min(z_real_values))
+    rj_initial = max(lower[1], max(z_real_values) - rs_initial)
+    cj_initial = statistics.median(positive_raw_capacitances) if positive_raw_capacitances else 1e-6
+    ls_initial = max(
+        lower[3],
+        max(point[2] / (2.0 * math.pi * point[0]) for point in spectrum),
+    )
+    initial = [rs_initial, rj_initial, cj_initial, ls_initial]
+    initial = [
+        min(max(value, low * 1.000001), high / 1.000001)
+        for value, low, high in zip(initial, lower, upper)
+    ]
+
+    def unpack(log_parameters: Iterable[float]) -> Tuple[float, float, float, float]:
+        rs, rj, cj, ls = [math.exp(float(value)) for value in log_parameters]
+        return rs, rj, cj, ls
+
+    def residuals(log_parameters: Iterable[float]) -> List[float]:
+        rs, rj, cj, ls = unpack(log_parameters)
+        real_residuals: List[float] = []
+        imag_residuals: List[float] = []
+        for frequency, measured_real, measured_imag in spectrum:
+            omega = 2.0 * math.pi * frequency
+            denominator = 1.0 + (rj * omega * cj) ** 2
+            predicted_real = rs + rj / denominator
+            predicted_imag = omega * ls - (rj * rj * omega * cj) / denominator
+            real_residuals.append(predicted_real - measured_real)
+            imag_residuals.append(predicted_imag - measured_imag)
+        return real_residuals + imag_residuals
+
+    try:
+        result = least_squares(
+            residuals,
+            [math.log(value) for value in initial],
+            bounds=(
+                [math.log(value) for value in lower],
+                [math.log(value) for value in upper],
+            ),
+            max_nfev=10000,
+        )
+        rs, rj, cj, ls = unpack(result.x)
+        fit_residuals = residuals(result.x)
+    except Exception:
+        return None
+
+    if not all(math.isfinite(value) and value > 0 for value in (rs, rj, cj, ls)):
+        return None
+
+    rmse = math.sqrt(sum(value * value for value in fit_residuals) / len(fit_residuals))
+    magnitude_scale = statistics.median(z_magnitudes)
+    normalized_rmse = rmse / magnitude_scale if magnitude_scale > 0 else float("nan")
+    warnings: List[str] = []
+    if not result.success:
+        warnings.append(str(result.message))
+    if math.isfinite(normalized_rmse) and normalized_rmse > 0.20:
+        warnings.append("equivalent-circuit fit error exceeds 20% of median |Z|")
+
+    return {
+        "C_junction_fit_F": cj,
+        "R_junction_fit_ohm": rj,
+        "R_series_fit_ohm": rs,
+        "L_series_fit_H": ls,
+        "equivalent_circuit_fit_rmse_ohm": rmse,
+        "equivalent_circuit_fit_normalized_rmse": normalized_rmse,
+        "equivalent_circuit_fit_frequency_points": len(spectrum),
+        "equivalent_circuit_fit_method": "CNLS: Rs + j*w*Ls + (Rj || Cj)",
+        "equivalent_circuit_fit_warning": "; ".join(warnings),
     }
 
 
@@ -1874,11 +1987,19 @@ class MeasurementEngine:
                         "measurement_endpoint": "negative_current",
                         "R_junction_ohm": float("nan"),
                         "R_series_estimate_ohm": float("nan"),
+                        "R_junction_fit_ohm": float("nan"),
+                        "R_series_fit_ohm": float("nan"),
+                        "L_series_fit_H": float("nan"),
+                        "C_junction_fit_F": float("nan"),
                         "Rj_low_frequency_Hz": float("nan"),
                         "Rj_high_frequency_Hz": float("nan"),
                         "C_final_median_F": float("nan"),
                         "C_final_mean_F": float("nan"),
                         "C_final_std_F": float("nan"),
+                        "C_final_method": "",
+                        "C_parallel_median_F": float("nan"),
+                        "C_parallel_mean_F": float("nan"),
+                        "C_parallel_std_F": float("nan"),
                         "filter_used_points": 0,
                         "filter_candidate_points": 0,
                         "filter_frequency_min_Hz": float("nan"),
@@ -1942,6 +2063,7 @@ class MeasurementEngine:
 
                 filt = self.filter_capacitance_rows(rows_for_voltage)
                 rj_estimate = junction_resistance_from_rows(rows_for_voltage)
+                circuit_fit = equivalent_circuit_fit_from_rows(rows_for_voltage)
                 vdc_values = [r["Vdc_pv_V"] for r in rows_for_voltage if math.isfinite(r["Vdc_pv_V"])]
                 idc_values = [r["Idc_pv_A"] for r in rows_for_voltage if math.isfinite(r["Idc_pv_A"])]
                 cv_row: Dict[str, Any] = {
@@ -1972,34 +2094,91 @@ class MeasurementEngine:
                 else:
                     cv_row.update({
                         "R_junction_ohm": float("nan"),
+                        "R_junction_endpoint_estimate_ohm": float("nan"),
                         "R_series_estimate_ohm": float("nan"),
+                        "R_series_endpoint_estimate_ohm": float("nan"),
                         "Rj_low_frequency_Hz": float("nan"),
                         "Rj_high_frequency_Hz": float("nan"),
                         "Rj_low_frequency_Z_real_ohm": float("nan"),
                         "Rj_high_frequency_Z_real_ohm": float("nan"),
                     })
+
+                if circuit_fit:
+                    cv_row.update(circuit_fit)
+                    cv_row["R_junction_ohm"] = circuit_fit["R_junction_fit_ohm"]
+                    cv_row["R_series_estimate_ohm"] = circuit_fit["R_series_fit_ohm"]
+                    self.log(
+                        f"Equivalent-circuit fit | Vdc={cv_row['Vdc_pv_median_V']:.6e} V | "
+                        f"Cj={circuit_fit['C_junction_fit_F']:.6e} F | "
+                        f"Rj={circuit_fit['R_junction_fit_ohm']:.6e} ohm | "
+                        f"Rs={circuit_fit['R_series_fit_ohm']:.6e} ohm | "
+                        f"Ls={circuit_fit['L_series_fit_H']:.6e} H"
+                    )
+                    if circuit_fit["equivalent_circuit_fit_warning"]:
+                        self.log(
+                            "WARNING: Equivalent-circuit fit: "
+                            + circuit_fit["equivalent_circuit_fit_warning"]
+                        )
+                else:
+                    cv_row.update({
+                        "C_junction_fit_F": float("nan"),
+                        "R_junction_fit_ohm": float("nan"),
+                        "R_series_fit_ohm": float("nan"),
+                        "L_series_fit_H": float("nan"),
+                        "equivalent_circuit_fit_rmse_ohm": float("nan"),
+                        "equivalent_circuit_fit_normalized_rmse": float("nan"),
+                        "equivalent_circuit_fit_frequency_points": 0,
+                        "equivalent_circuit_fit_method": "",
+                        "equivalent_circuit_fit_warning": "",
+                    })
+
                 if filt:
                     cv_row.update({
-                        "C_final_median_F": filt["final_median_F"],
-                        "C_final_mean_F": filt["final_mean_F"],
-                        "C_final_std_F": filt["final_std_F"],
+                        "C_parallel_median_F": filt["final_median_F"],
+                        "C_parallel_mean_F": filt["final_mean_F"],
+                        "C_parallel_std_F": filt["final_std_F"],
                         "filter_used_points": filt["used_count"],
                         "filter_candidate_points": filt["candidate_count"],
                         "filter_frequency_min_Hz": filt["frequency_min_Hz"],
                         "filter_frequency_max_Hz": filt["frequency_max_Hz"],
                     })
-                    scale, unit_label = capacitance_scale_factor(self.settings.capacitance_unit)
-                    self.log(f"CV point saved | Vdc={cv_row['Vdc_pv_median_V']:.6e} V | C={cv_row['C_final_median_F'] * scale:.6g} {unit_label}")
                 else:
                     cv_row.update({
-                        "C_final_median_F": float("nan"),
-                        "C_final_mean_F": float("nan"),
-                        "C_final_std_F": float("nan"),
+                        "C_parallel_median_F": float("nan"),
+                        "C_parallel_mean_F": float("nan"),
+                        "C_parallel_std_F": float("nan"),
                         "filter_used_points": 0,
                         "filter_candidate_points": 0,
                         "filter_frequency_min_Hz": float("nan"),
                         "filter_frequency_max_Hz": float("nan"),
                     })
+
+                if circuit_fit:
+                    final_capacitance = circuit_fit["C_junction_fit_F"]
+                    final_method = "equivalent_circuit_cnls"
+                    final_std = float("nan")
+                elif filt:
+                    final_capacitance = filt["final_median_F"]
+                    final_method = "parallel_capacitance_frequency_median_fallback"
+                    final_std = filt["final_std_F"]
+                else:
+                    final_capacitance = float("nan")
+                    final_method = ""
+                    final_std = float("nan")
+
+                cv_row.update({
+                    "C_final_median_F": final_capacitance,
+                    "C_final_mean_F": final_capacitance,
+                    "C_final_std_F": final_std,
+                    "C_final_method": final_method,
+                })
+                if math.isfinite(final_capacitance):
+                    scale, unit_label = capacitance_scale_factor(self.settings.capacitance_unit)
+                    self.log(
+                        f"CV point saved | Vdc={cv_row['Vdc_pv_median_V']:.6e} V | "
+                        f"C={final_capacitance * scale:.6g} {unit_label} | method={final_method}"
+                    )
+                else:
                     self.log("WARNING: No reliable capacitance value for this voltage point.")
                 cv_rows.append(cv_row)
 

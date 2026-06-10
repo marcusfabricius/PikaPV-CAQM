@@ -883,6 +883,10 @@ def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, 
                 combined["Z_mag"] = combined.get("Z_magnitude_ohm", combined.get("Z_mag_ohm", ""))
             if "Rj" not in combined and "R_junction_ohm" in combined:
                 combined["Rj"] = combined["R_junction_ohm"]
+            if "Cj" not in combined and "C_junction_fit_F" in combined:
+                combined["Cj"] = combined["C_junction_fit_F"]
+            if "C_parallel" not in combined:
+                combined["C_parallel"] = combined.get("C_parallel_median_F", combined.get("C_uncorrected_F", ""))
             if "Phase_Z" not in combined and "Z_phase_deg" in combined:
                 combined["Phase_Z"] = combined["Z_phase_deg"]
             if "Vac_pv" not in combined and "Vac_mag_corrected_V" in combined:
@@ -995,26 +999,56 @@ def add_derived_rj_to_complete_ac_datasets(
             grouped.setdefault(key, []).append(row)
 
     estimates: Dict[str, Dict[str, Any]] = {}
+    circuit_fits: Dict[str, Dict[str, Any]] = {}
     for key, rows in grouped.items():
         normalized = []
         for row in rows:
             frequency = safe_float(row.get("f_ac_Hz", row.get("frequency_hz", row.get("frequency"))))
             z_real = safe_float(row.get("Z_real_ohm", row.get("Z_real")))
-            if frequency is not None and z_real is not None:
-                normalized.append({"f_ac_Hz": frequency, "Z_real_ohm": z_real})
+            z_imag = safe_float(row.get("Z_imag_ohm", row.get("Z_imag")))
+            raw_capacitance = safe_float(row.get("C_uncorrected_F", row.get("C_parallel")))
+            if frequency is not None and z_real is not None and z_imag is not None:
+                normalized.append({
+                    "f_ac_Hz": frequency,
+                    "Z_real_ohm": z_real,
+                    "Z_imag_ohm": z_imag,
+                    "C_uncorrected_F": raw_capacitance,
+                })
         estimate = backend.junction_resistance_from_rows(normalized)
-        if estimate is None:
-            continue
-        estimates[key] = estimate
+        circuit_fit = backend.equivalent_circuit_fit_from_rows(normalized)
+        if estimate is not None:
+            estimates[key] = estimate
+        if circuit_fit is not None:
+            circuit_fits[key] = circuit_fit
         for row in rows:
-            row.update(estimate)
-            row["Rj"] = estimate["R_junction_ohm"]
+            if estimate is not None:
+                row.update(estimate)
+                row["Rj"] = estimate["R_junction_ohm"]
+            if circuit_fit is not None:
+                row["R_junction_ohm"] = circuit_fit["R_junction_fit_ohm"]
+                row["R_series_estimate_ohm"] = circuit_fit["R_series_fit_ohm"]
+                row["Rj"] = circuit_fit["R_junction_fit_ohm"]
 
     for row in datasets.get("cv_curve", []):
-        estimate = estimates.get(group_key(row))
+        key = group_key(row)
+        estimate = estimates.get(key)
         if estimate:
             row.update(estimate)
             row["Rj"] = estimate["R_junction_ohm"]
+        circuit_fit = circuit_fits.get(key)
+        if circuit_fit:
+            previous_capacitance = safe_float(row.get("C_final_median_F"))
+            if previous_capacitance is not None and safe_float(row.get("C_parallel_median_F")) is None:
+                row["C_parallel_median_F"] = previous_capacitance
+            row.update(circuit_fit)
+            row["R_junction_ohm"] = circuit_fit["R_junction_fit_ohm"]
+            row["R_series_estimate_ohm"] = circuit_fit["R_series_fit_ohm"]
+            row["Rj"] = circuit_fit["R_junction_fit_ohm"]
+            row["Cj"] = circuit_fit["C_junction_fit_F"]
+            row["C_final_median_F"] = circuit_fit["C_junction_fit_F"]
+            row["C_final_mean_F"] = circuit_fit["C_junction_fit_F"]
+            row["C_final_std_F"] = float("nan")
+            row["C_final_method"] = "equivalent_circuit_cnls"
     return datasets
 
 
