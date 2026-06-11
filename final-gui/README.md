@@ -2,7 +2,7 @@
 
 Local browser GUI for solar-cell DC, impedance, C-V, and live lock-in measurements.
 
-The app is a Flask web interface around the measurement backend in `gui-v1.py`. It is intended to run on the measurement PC connected to the instruments over VISA/GPIB.
+The app is a Flask web interface whose runtime files now live under `src/`, with the measurement backend in `src/pikapv-backend.py`. It is intended to run on the measurement PC connected to the instruments over VISA/GPIB.
 
 ## Files
 
@@ -17,41 +17,35 @@ Required files for the GUI:
 - `src/requirements.txt` - Python dependencies.
 - `measurement_output/` - generated CSV files.
 
-## Install
-
-From this folder:
-
-```powershell
-cd final-gui
-python -m pip install -r src/requirements.txt
-```
-
-For real instruments, PyVISA also needs a working VISA backend installed on the PC, for example NI-VISA.
-
 ## Start
+
+### Run using the launcher script (recommended)
+
+Use the launcher script for your OS:
+
+- Windows: `Windows_start_web_gui.bat`
+- macOS: `MacOS_start_web_gui.command`
+- Linux: `Linux_start_web_gui.sh`
+
+### Manual start via terminal
+
+If you prefer to start the app directly from a terminal:
 
 ```powershell
 cd final-gui
 python start_web_gui.py
 ```
 
-or directly:
-
-```powershell
-cd final-gui
-python src/web_app.py
-```
-
-Open:
+It should automatically open:
 
 ```text
 http://127.0.0.1:5000
 ```
 
-The terminal running `web_app.py` shows measurement progress, current frequency/voltage points, capacitance values, safety stops, output file paths, and errors.
+The terminal running `start_web_gui.py` shows measurement progress, current frequency/voltage points, capacitance values, safety stops, output file paths, and errors.
 
 ## Configuration
-
+ 
 Edit `default_settings.yaml` to change startup defaults. Restart `python web_app.py` after editing it.
 
 GPIB addresses can be written as only the number:
