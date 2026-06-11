@@ -110,6 +110,10 @@ p, label { color: var(--muted); }
   grid-template-columns: minmax(180px, 1fr) 110px;
 }
 
+#screen1 > .actions {
+  margin-top: 24px;
+}
+
 .icon {
   border: 1px solid var(--line);
   background: #fff;
