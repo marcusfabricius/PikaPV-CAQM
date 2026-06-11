@@ -50,22 +50,13 @@ Common options include:
 Use the vendor's connection utility to confirm that all instruments can be
 discovered before starting PikaPV.
 
-### 4. Install Python packages
-
-The launcher automatically checks and installs missing packages from
-`src/requirements.txt`.
-
-To install them manually:
-
-```text
-python -m pip install -r src/requirements.txt
-```
-
-On Linux or macOS, use `python3` instead of `python` when required.
-
 ## Starting PikaPV
 
 Run the launcher for your operating system from the project folder.
+
+The launcher automatically checks and installs missing packages from
+`src/requirements.txt`. No separate Python-package installation step is
+normally required.
 
 ### Windows
 
@@ -130,6 +121,14 @@ The launcher:
 Keep the terminal open while using PikaPV. It shows measurement progress,
 instrument warnings, safety stops, file locations, and errors.
 
+If automatic package installation fails, install the requirements manually:
+
+```text
+python -m pip install -r src/requirements.txt
+```
+
+On Linux or macOS, use `python3` instead of `python` when required.
+
 ## Measurements
 
 | Mode | Purpose |
@@ -159,32 +158,6 @@ can download the combined CSV and each displayed plot separately.
 
 The SMU, AC function generator, and LED function generator intentionally remain
 on after measurements. The SMU is left at the calibrated stop voltage.
-
-## Project Files
-
-```text
-start_web_gui.py              Cross-platform Python launcher
-Windows_start_web_gui.bat     Windows launcher
-Linux_start_web_gui.sh        Linux launcher
-MacOS_start_web_gui.command   macOS launcher
-default_settings.yaml         Measurement and instrument defaults
-speedprofile_settings.yaml    Speed profiles
-src/web_app.py                Web server and API
-src/pikapv-backend.py         Measurement and instrument control
-src/templates/                Browser interface
-src/static/                   Interface logic, styling, and assets
-```
-
-## Troubleshooting
-
-- **No instruments found:** check power, GPIB addresses, cables, and VISA
-  drivers.
-- **Calibration fails:** check the solar-cell connection, polarity, illumination,
-  and configured calibration range.
-- **Incorrect current sign:** check probe orientation and current sign settings.
-- **Unstable AC readings:** check shielding, grounding, lock-in sensitivity, and
-  settling times.
-- **Browser does not open:** visit `http://127.0.0.1:5000` manually.
 
 Before disconnecting hardware, inspect the instrument front panels and place all
 outputs in a safe state.
