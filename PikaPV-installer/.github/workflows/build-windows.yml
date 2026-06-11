@@ -1,0 +1,30 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build PikaPV installer
+        shell: powershell
+        run: .\build.ps1 -Clean
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PikaPV-Windows-installer
+          path: installer-output/*.exe
+

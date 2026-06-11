@@ -1,0 +1,88 @@
+# Speed profile defaults for web measurements.
+# Custom is edited from the Advanced settings panel.
+
+speed_profiles:
+  Custom:
+    Frequency sweep:
+      Vdc_pv Step Size: 0.025
+      Frequency points per decade: 8
+      Minimum frequency points: 8
+      Settling SMU change time: 1.0
+      Settling FG change time: 4.0
+      Lockin Time wait: 0.0
+      AC samples per frequency: 3
+      Maximum AC impedance spread percent: 8.0
+      AC sample interval: 0.1
+    CV curve:
+      Vdc_pv Step Size: 0.02
+      Frequency points per decade: 4
+      Minimum frequency points: 8
+      Settling SMU change time: 1.0
+      Settling FG change time: 3.0
+      Lockin Time wait: 0.0
+      AC samples per frequency: 3
+      Maximum AC impedance spread percent: 8.0
+      AC sample interval: 0.1
+  Fast:
+    Frequency sweep:
+      Vdc_pv Step Size: 0.05
+      Frequency points per decade: 4
+      Minimum frequency points: 6
+      Settling SMU change time: 1.0
+      Settling FG change time: 2.6
+      Lockin Time wait: 0.0
+      AC samples per frequency: 1
+      Maximum AC impedance spread percent: 15.0
+      AC sample interval: 0.0
+    CV curve:
+      Vdc_pv Step Size: 0.07
+      Frequency points per decade: 3
+      Minimum frequency points: 6
+      Settling SMU change time: 0.8
+      Settling FG change time: 2.6
+      Lockin Time wait: 0.0
+      AC samples per frequency: 1
+      Maximum AC impedance spread percent: 15.0
+      AC sample interval: 0.0
+  Medium:
+    Frequency sweep:
+      Vdc_pv Step Size: 0.025
+      Frequency points per decade: 8
+      Minimum frequency points: 10
+      Settling SMU change time: 1.0
+      Settling FG change time: 4.0
+      Lockin Time wait: 0.0
+      AC samples per frequency: 3
+      Maximum AC impedance spread percent: 8.0
+      AC sample interval: 0.1
+    CV curve:
+      Vdc_pv Step Size: 0.05
+      Frequency points per decade: 3
+      Minimum frequency points: 5
+      Settling SMU change time: 1.0
+      Settling FG change time: 3.0
+      Lockin Time wait: 0.0
+      AC samples per frequency: 3
+      Maximum AC impedance spread percent: 8.0
+      AC sample interval: 0.1
+  Slow:
+    Frequency sweep:
+      Vdc_pv Step Size: 0.01
+      Frequency points per decade: 16
+      Minimum frequency points: 16
+      Settling SMU change time: 1.0
+      Settling FG change time: 5.6
+      Lockin Time wait: 0.0
+      AC samples per frequency: 5
+      Maximum AC impedance spread percent: 8.0
+      AC sample interval: 0.2
+    CV curve:
+      Vdc_pv Step Size: 0.035
+      Frequency points per decade: 5
+      Minimum frequency points: 8
+      Settling SMU change time: 1.0
+      Settling FG change time: 4.0
+      Lockin Time wait: 0.0
+      AC samples per frequency: 5
+      Maximum AC impedance spread percent: 8.0
+      AC sample interval: 0.2

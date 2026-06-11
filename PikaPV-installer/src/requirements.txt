@@ -1,0 +1,4 @@
+Flask>=3.0
+pyvisa>=1.14
+PyYAML>=6.0
+waitress>=3.0

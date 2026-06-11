@@ -1,0 +1,47 @@
+name: Build macOS and Linux installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build macOS app and DMG
+        run: bash build-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PikaPV-macOS
+          path: |
+            installer-output/*.dmg
+            installer-output/*.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build Linux package and archive
+        run: bash build-linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PikaPV-Linux
+          path: |
+            installer-output/*.deb
+            installer-output/*.tar.gz
+
