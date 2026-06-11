@@ -81,7 +81,6 @@ const customSpeedProfileKeys = new Set([
 ]);
 
 const advancedFieldLabels = {
-  auto_smu_range: "Automatic SMU range (always on)",
   custom_frequency_sweep_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
   custom_frequency_sweep_frequency_points_per_decade: "Frequency points per decade",
   custom_frequency_sweep_minimum_frequency_points: "Minimum frequency points",
@@ -108,7 +107,6 @@ const advancedFieldLabels = {
   lockin_time_constant_wait_s: "Lockin Time wait [s]",
   z_real_outlier_min_vdc_pv_v: "Z' retry minimum Vdc_pv [V]",
   stop_if_idc_negative: "End measurement when Idc becomes negative",
-  negative_idc_limit_a: "Negative-current endpoint [A]",
   dc_read_repeats: "DC samples per reading",
   dc_variation_warning_percent: "DC variation warning [%]",
   dc_vdc_variation_warning_floor_v: "Minimum Vdc warning range [V]",
@@ -667,12 +665,10 @@ function buildAdvanced() {
     ["LED settings", ["led_duty_cycle_percent"]],
     ["Custom frequency sweep", ["custom_frequency_sweep_vdc_pv_step_size_v", "custom_frequency_sweep_frequency_points_per_decade", "custom_frequency_sweep_minimum_frequency_points", "custom_frequency_sweep_settling_after_smu_s", "custom_frequency_sweep_settling_after_freq_s", "custom_frequency_sweep_lockin_time_constant_wait_s", "custom_frequency_sweep_ac_samples_per_frequency", "custom_frequency_sweep_ac_max_impedance_spread_percent", "custom_frequency_sweep_ac_sample_interval_s"]],
     ["Custom CV curve", ["custom_cv_vdc_pv_step_size_v", "custom_cv_frequency_points_per_decade", "custom_cv_minimum_frequency_points", "custom_cv_settling_after_smu_s", "custom_cv_settling_after_freq_s", "custom_cv_lockin_time_constant_wait_s", "custom_cv_ac_samples_per_frequency", "custom_cv_ac_max_impedance_spread_percent", "custom_cv_ac_sample_interval_s"]],
-    ["SMU settings", ["auto_smu_range", "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "manual_smu_voltage_v", "target_vpv_v", "operating_point_mode"]],
     ["Measurement quality", ["dc_read_repeats", "dc_variation_warning_percent", "dc_vdc_variation_warning_floor_v", "dc_idc_variation_warning_floor_a"]],
-    ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
-    ["Lock In Amp settings", ["iac_measurement_sign", "iac_mag_cmd", "iac_phase_cmd", "idc_adc1_cmd", "vac_mag_cmd", "vac_phase_cmd", "configure_lockins", "lockin_sensitivity_cmd", "invert_voltage_phasor"]],
-    ["GPIB addresses", ["dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "led_fg_addr", "smu_addr"]],
-    ["Others", ["freq_start_hz", "freq_stop_hz", "vac_vpp", "fg_offset_v", "fg_waveform", "ab_sample_interval_s", "max_abs_z_real_ohm", "z_real_outlier_min_vdc_pv_v", "max_outlier_retries", "outlier_retry_wait_s", "remeasure_z_real_outliers", "abort_if_outlier_retries_exhausted", "simulation_mode", "output_dir", "capacitance_unit", "nyquist_y_axis_sign"]]
+    ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "idc_adc1_to_ampere", "idc_measurement_sign"]],
+    ["Lock In Amp settings", ["iac_measurement_sign", "configure_lockins", "lockin_sensitivity_cmd"]],
+    ["GPIB addresses", ["dmm_addr", "lockin_i_addr", "lockin_v_addr", "fg_addr", "led_fg_addr", "smu_addr"]]
   ];
   $("advancedGrid").innerHTML = sections.map(([title, keys], index) => `
     <details class="advanced-section" ${index < 2 ? "open" : ""}>
