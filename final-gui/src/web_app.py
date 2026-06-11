@@ -22,9 +22,10 @@ except Exception:  # pragma: no cover
     yaml = None
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_SETTINGS_FILE = BASE_DIR / "default_settings.yaml"
-SPEED_PROFILE_SETTINGS_FILE = BASE_DIR / "speedprofile_settings.yaml"
+SRC_DIR = Path(__file__).resolve().parent
+APP_DIR = SRC_DIR.parent
+DEFAULT_SETTINGS_FILE = APP_DIR / "default_settings.yaml"
+SPEED_PROFILE_SETTINGS_FILE = APP_DIR / "speedprofile_settings.yaml"
 APP_STARTED_AT = datetime.now().isoformat(timespec="seconds")
 ESTIMATE_FIXED_OVERHEAD_S = 4.0
 ESTIMATE_PER_VOLTAGE_OVERHEAD_S = 0.10
@@ -141,7 +142,7 @@ SPEED_PROFILE_KEY_ALIASES = {
 
 
 def load_measurement_backend():
-    spec = importlib.util.spec_from_file_location("pikapv_backend", BASE_DIR / "pikapv-backend.py")
+    spec = importlib.util.spec_from_file_location("pikapv_backend", SRC_DIR / "pikapv-backend.py")
     if spec is None or spec.loader is None:
         raise RuntimeError("Could not load pikapv-backend.py measurement backend.")
     module = importlib.util.module_from_spec(spec)
@@ -949,7 +950,7 @@ def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, 
             rows.append(combined)
 
     if not output_dir.is_absolute():
-        output_dir = BASE_DIR / output_dir
+        output_dir = APP_DIR / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"combined_{mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     backend.save_rows(rows, path)
@@ -1286,7 +1287,7 @@ def upload():
     uploaded = request.files.get("csv_file")
     if uploaded is None or not uploaded.filename:
         return jsonify({"ok": False, "error": "Choose a CSV file first."}), 400
-    upload_dir = BASE_DIR / "measurement_output" / "uploads"
+    upload_dir = APP_DIR / "measurement_output" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / secure_filename(uploaded.filename)
     uploaded.save(path)
@@ -1327,13 +1328,13 @@ def download_combined():
         path = STATE.combined_csv
         output_files = list(STATE.output_files)
     if path and not path.is_absolute():
-        candidates = [BASE_DIR / path, Path.cwd() / path, path.resolve()]
+        candidates = [APP_DIR / path, Path.cwd() / path, path.resolve()]
         path = next((candidate for candidate in candidates if candidate.exists()), path)
     if (not path or not path.exists()) and output_files:
         for raw in output_files:
             candidate = Path(raw)
             if not candidate.is_absolute():
-                candidates = [BASE_DIR / candidate, Path.cwd() / candidate, candidate.resolve()]
+                candidates = [APP_DIR / candidate, Path.cwd() / candidate, candidate.resolve()]
                 candidate = next((item for item in candidates if item.exists()), candidate)
             if candidate.exists() and candidate.suffix.lower() == ".csv":
                 path = candidate

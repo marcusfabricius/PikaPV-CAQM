@@ -8,13 +8,13 @@ The app is a Flask web interface around the measurement backend in `gui-v1.py`. 
 
 Required files for the GUI:
 
-- `web_app.py` - starts the local Flask web server and API.
-- `gui-v1.py` - measurement backend and instrument control.
+- `src/web_app.py` - starts the local Flask web server and API.
+- `src/pikapv-backend.py` - measurement backend and instrument control.
 - `default_settings.yaml` - editable default values for Advanced settings.
-- `templates/index.html` - browser UI.
-- `static/app.js` - UI logic, plotting, live view, polling, upload/download.
-- `static/app.css` - UI styling.
-- `requirements.txt` - Python dependencies.
+- `src/templates/index.html` - browser UI.
+- `src/static/app.js` - UI logic, plotting, live view, polling, upload/download.
+- `src/static/app.css` - UI styling.
+- `src/requirements.txt` - Python dependencies.
 - `measurement_output/` - generated CSV files.
 
 ## Install
@@ -23,7 +23,7 @@ From this folder:
 
 ```powershell
 cd final-gui
-python -m pip install -r requirements.txt
+python -m pip install -r src/requirements.txt
 ```
 
 For real instruments, PyVISA also needs a working VISA backend installed on the PC, for example NI-VISA.
@@ -32,7 +32,14 @@ For real instruments, PyVISA also needs a working VISA backend installed on the 
 
 ```powershell
 cd final-gui
-python web_app.py
+python start_web_gui.py
+```
+
+or directly:
+
+```powershell
+cd final-gui
+python src/web_app.py
 ```
 
 Open:
