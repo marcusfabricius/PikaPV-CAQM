@@ -14,7 +14,6 @@
         <p id="statusText">Local measurement web interface</p>
       </div>
       <div class="top-actions">
-        <button class="ghost" id="calibrateSmuButton" type="button">Calibrate for solar cell</button>
         <button class="ghost" id="resumeButton" type="button" hidden>Resume</button>
         <button class="ghost danger" id="stopButton" type="button" hidden>Stop</button>
       </div>
@@ -28,6 +27,24 @@
 
     <section class="screen active" id="screen1">
       <div class="mode-grid" id="modeGrid"></div>
+      <div class="home-controls" aria-label="Measurement controls">
+        <label>
+          Speed profile
+          <select id="homeSpeedProfile">
+            <option>Fast</option>
+            <option>Medium</option>
+            <option>Slow</option>
+            <option>Custom</option>
+          </select>
+        </label>
+        <label class="home-led-duty">
+          LED brightness [%]
+          <div class="range-pair">
+            <input id="homeLedDutyRange" data-led-duty="range" type="range" min="1" max="99" step="0.1">
+            <input id="homeLedDutyNumber" data-led-duty="number" type="number" min="1" max="99" step="0.1">
+          </div>
+        </label>
+      </div>
       <div class="conditional" id="frequencyOptions"></div>
       <div class="conditional" id="acOptions"></div>
       <div class="actions">

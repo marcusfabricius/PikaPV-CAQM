@@ -7,6 +7,7 @@ import math
 import sys
 import threading
 import traceback
+import webbrowser
 from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +56,9 @@ def speed_profile_block(
     settle_smu: float,
     settle_freq: float,
     lockin_wait: float,
+    ac_samples: float,
+    ac_max_spread_percent: float,
+    ac_sample_interval_s: float,
 ) -> Dict[str, float]:
     return {
         "vdc_pv_step_size_v": vdc_step,
@@ -63,25 +67,28 @@ def speed_profile_block(
         "settling_after_smu_s": settle_smu,
         "settling_after_freq_s": settle_freq,
         "lockin_time_constant_wait_s": lockin_wait,
+        "ac_samples_per_frequency": ac_samples,
+        "ac_max_impedance_spread_percent": ac_max_spread_percent,
+        "ac_sample_interval_s": ac_sample_interval_s,
     }
 
 
 SPEED_PROFILE_DEFAULTS: Dict[str, Dict[str, Dict[str, float]]] = {
     "Custom": {
-        "frequency_sweep": speed_profile_block(0.025, 8, 8, 1.0, 4.0, 0.0),
-        "cv_curve": speed_profile_block(0.025, 8, 8, 1.0, 4.0, 0.0),
+        "frequency_sweep": speed_profile_block(0.025, 8, 8, 1.0, 4.0, 0.0, 3, 8.0, 0.10),
+        "cv_curve": speed_profile_block(0.025, 8, 8, 1.0, 4.0, 0.0, 3, 8.0, 0.10),
     },
     "Fast": {
-        "frequency_sweep": speed_profile_block(0.05, 4, 6, 1.0, 2.6, 0.0),
-        "cv_curve": speed_profile_block(0.05, 4, 6, 1.0, 2.6, 0.0),
+        "frequency_sweep": speed_profile_block(0.05, 4, 6, 1.0, 2.6, 0.0, 1, 15.0, 0.00),
+        "cv_curve": speed_profile_block(0.05, 4, 6, 1.0, 2.6, 0.0, 1, 15.0, 0.00),
     },
     "Medium": {
-        "frequency_sweep": speed_profile_block(0.025, 8, 10, 1.0, 4.0, 0.0),
-        "cv_curve": speed_profile_block(0.025, 8, 10, 1.0, 4.0, 0.0),
+        "frequency_sweep": speed_profile_block(0.025, 8, 10, 1.0, 4.0, 0.0, 3, 8.0, 0.10),
+        "cv_curve": speed_profile_block(0.025, 8, 10, 1.0, 4.0, 0.0, 3, 8.0, 0.10),
     },
     "Slow": {
-        "frequency_sweep": speed_profile_block(0.01, 16, 16, 1.0, 5.6, 0.0),
-        "cv_curve": speed_profile_block(0.01, 16, 16, 1.0, 5.6, 0.0),
+        "frequency_sweep": speed_profile_block(0.01, 16, 16, 1.0, 5.6, 0.0, 5, 4.0, 0.20),
+        "cv_curve": speed_profile_block(0.01, 16, 16, 1.0, 5.6, 0.0, 5, 4.0, 0.20),
     },
 }
 
@@ -92,12 +99,18 @@ CUSTOM_SPEED_FIELD_TO_PROFILE_TARGET = {
     "custom_frequency_sweep_settling_after_smu_s": ("frequency_sweep", "settling_after_smu_s"),
     "custom_frequency_sweep_settling_after_freq_s": ("frequency_sweep", "settling_after_freq_s"),
     "custom_frequency_sweep_lockin_time_constant_wait_s": ("frequency_sweep", "lockin_time_constant_wait_s"),
+    "custom_frequency_sweep_ac_samples_per_frequency": ("frequency_sweep", "ac_samples_per_frequency"),
+    "custom_frequency_sweep_ac_max_impedance_spread_percent": ("frequency_sweep", "ac_max_impedance_spread_percent"),
+    "custom_frequency_sweep_ac_sample_interval_s": ("frequency_sweep", "ac_sample_interval_s"),
     "custom_cv_vdc_pv_step_size_v": ("cv_curve", "vdc_pv_step_size_v"),
     "custom_cv_frequency_points_per_decade": ("cv_curve", "frequency_points_per_decade"),
     "custom_cv_minimum_frequency_points": ("cv_curve", "minimum_frequency_points"),
     "custom_cv_settling_after_smu_s": ("cv_curve", "settling_after_smu_s"),
     "custom_cv_settling_after_freq_s": ("cv_curve", "settling_after_freq_s"),
     "custom_cv_lockin_time_constant_wait_s": ("cv_curve", "lockin_time_constant_wait_s"),
+    "custom_cv_ac_samples_per_frequency": ("cv_curve", "ac_samples_per_frequency"),
+    "custom_cv_ac_max_impedance_spread_percent": ("cv_curve", "ac_max_impedance_spread_percent"),
+    "custom_cv_ac_sample_interval_s": ("cv_curve", "ac_sample_interval_s"),
 }
 
 LEGACY_CUSTOM_SPEED_FIELD_TO_PROFILE_TARGET = {
@@ -116,6 +129,9 @@ SPEED_PROFILE_FILE_KEYS = {
     "settling_after_smu_s": "Settling SMU change time",
     "settling_after_freq_s": "Settling FG change time",
     "lockin_time_constant_wait_s": "Lockin Time wait",
+    "ac_samples_per_frequency": "AC samples per frequency",
+    "ac_max_impedance_spread_percent": "Maximum AC impedance spread percent",
+    "ac_sample_interval_s": "AC sample interval",
 }
 
 SPEED_PROFILE_KEY_ALIASES = {
@@ -520,13 +536,14 @@ def sync_backend_speed_profiles(
 ) -> None:
     for profile_name in SPEED_PROFILE_ORDER:
         profile = speed_profile_for(profiles, profile_name, kind)
-        current = backend.SPEED_LEVELS.get(profile_name, backend.SPEED_LEVELS["Medium"])
         backend.AUTO_VDC_STEP_BY_SPEED[profile_name] = float(profile["vdc_pv_step_size_v"])
         backend.SPEED_LEVELS[profile_name] = backend.SpeedLevel(
             profile_name,
             points_per_decade=max(1, int(round(float(profile["frequency_points_per_decade"])))),
             minimum_frequency_points=max(1, int(round(float(profile["minimum_frequency_points"])))),
-            repeats=current.repeats,
+            ac_samples_per_frequency=max(1, int(round(float(profile["ac_samples_per_frequency"])))),
+            ac_max_impedance_spread_percent=float(profile["ac_max_impedance_spread_percent"]),
+            ac_sample_interval_s=max(0.0, float(profile["ac_sample_interval_s"])),
             settling_multiplier=1.0,
         )
 
@@ -539,6 +556,9 @@ def set_custom_profile_settings(settings: Any, kind: str, profile: Dict[str, flo
     setattr(settings, f"{prefix}_settling_after_smu_s", float(profile["settling_after_smu_s"]))
     setattr(settings, f"{prefix}_settling_after_freq_s", float(profile["settling_after_freq_s"]))
     setattr(settings, f"{prefix}_lockin_time_constant_wait_s", float(profile["lockin_time_constant_wait_s"]))
+    setattr(settings, f"{prefix}_ac_samples_per_frequency", int(round(float(profile["ac_samples_per_frequency"]))))
+    setattr(settings, f"{prefix}_ac_max_impedance_spread_percent", float(profile["ac_max_impedance_spread_percent"]))
+    setattr(settings, f"{prefix}_ac_sample_interval_s", float(profile["ac_sample_interval_s"]))
 
 
 def apply_effective_profile_to_settings(settings: Any, profile: Dict[str, float]) -> None:
@@ -548,6 +568,9 @@ def apply_effective_profile_to_settings(settings: Any, profile: Dict[str, float]
     settings.custom_vdc_pv_step_size_v = float(profile["vdc_pv_step_size_v"])
     settings.custom_frequency_points_per_decade = int(round(float(profile["frequency_points_per_decade"])))
     settings.custom_minimum_frequency_points = int(round(float(profile["minimum_frequency_points"])))
+    settings.ac_samples_per_frequency = int(round(float(profile["ac_samples_per_frequency"])))
+    settings.ac_max_impedance_spread_percent = float(profile["ac_max_impedance_spread_percent"])
+    settings.ac_sample_interval_s = float(profile["ac_sample_interval_s"])
 
 
 def apply_custom_profile_to_settings(settings: Any, profiles: Dict[str, Dict[str, Dict[str, float]]]) -> None:
@@ -565,6 +588,9 @@ def custom_profile_from_settings(settings: Any, kind: str) -> Dict[str, float]:
         float(getattr(settings, "settling_after_smu_s", 1.0)),
         float(getattr(settings, "settling_after_freq_s", 4.0)),
         float(getattr(settings, "lockin_time_constant_wait_s", 0.0)),
+        float(getattr(settings, "ac_samples_per_frequency", 3)),
+        float(getattr(settings, "ac_max_impedance_spread_percent", 8.0)),
+        float(getattr(settings, "ac_sample_interval_s", 0.10)),
     )
     return {
         "vdc_pv_step_size_v": float(getattr(settings, f"{prefix}_vdc_pv_step_size_v", fallback["vdc_pv_step_size_v"])),
@@ -573,6 +599,9 @@ def custom_profile_from_settings(settings: Any, kind: str) -> Dict[str, float]:
         "settling_after_smu_s": float(getattr(settings, f"{prefix}_settling_after_smu_s", fallback["settling_after_smu_s"])),
         "settling_after_freq_s": float(getattr(settings, f"{prefix}_settling_after_freq_s", fallback["settling_after_freq_s"])),
         "lockin_time_constant_wait_s": float(getattr(settings, f"{prefix}_lockin_time_constant_wait_s", fallback["lockin_time_constant_wait_s"])),
+        "ac_samples_per_frequency": float(getattr(settings, f"{prefix}_ac_samples_per_frequency", fallback["ac_samples_per_frequency"])),
+        "ac_max_impedance_spread_percent": float(getattr(settings, f"{prefix}_ac_max_impedance_spread_percent", fallback["ac_max_impedance_spread_percent"])),
+        "ac_sample_interval_s": float(getattr(settings, f"{prefix}_ac_sample_interval_s", fallback["ac_sample_interval_s"])),
     }
 
 
@@ -586,12 +615,13 @@ def apply_speed_profile_to_settings(
     profile = custom_profile_from_settings(settings, kind) if speed == "Custom" else speed_profile_for(profiles, speed, kind)
     apply_effective_profile_to_settings(settings, profile)
     backend.AUTO_VDC_STEP_BY_SPEED[speed] = float(profile["vdc_pv_step_size_v"])
-    current = backend.SPEED_LEVELS.get(speed, backend.SPEED_LEVELS["Medium"])
     backend.SPEED_LEVELS[speed] = backend.SpeedLevel(
         speed,
         points_per_decade=max(1, int(round(float(profile["frequency_points_per_decade"])))),
         minimum_frequency_points=max(1, int(round(float(profile["minimum_frequency_points"])))),
-        repeats=current.repeats,
+        ac_samples_per_frequency=max(1, int(round(float(profile["ac_samples_per_frequency"])))),
+        ac_max_impedance_spread_percent=float(profile["ac_max_impedance_spread_percent"]),
+        ac_sample_interval_s=max(0.0, float(profile["ac_sample_interval_s"])),
         settling_multiplier=1.0,
     )
 
@@ -764,9 +794,12 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
     settling_smu = max(0.0, float(settings.settling_after_smu_s))
     settling_freq = max(0.0, float(settings.settling_after_freq_s))
     lockin_wait = max(0.0, float(settings.lockin_time_constant_wait_s))
+    ac_samples = max(1, int(getattr(settings, "ac_samples_per_frequency", 1)))
+    ac_sample_interval = max(0.0, float(getattr(settings, "ac_sample_interval_s", 0.0)))
     dc_repeat_overhead_s = max(0, int(getattr(settings, "dc_read_repeats", 1)) - 1) * ESTIMATE_EXTRA_DC_SAMPLE_S
     voltage_read_overhead_s = ESTIMATE_PER_VOLTAGE_OVERHEAD_S + dc_repeat_overhead_s
-    per_freq_s = settling_freq + lockin_wait + 0.15 + dc_repeat_overhead_s
+    ac_sampling_s = ac_samples * 0.15 + max(0, ac_samples - 1) * ac_sample_interval
+    per_freq_s = settling_freq + lockin_wait + ac_sampling_s + dc_repeat_overhead_s
     n_freq = count_freq_points(settings, speed)
     n_voltage = 1
     total_s = 1.0
@@ -814,6 +847,7 @@ def estimate_measurement_progress(payload: Dict[str, Any], settings: Any, calibr
         "estimated_total_s": max(1.0, total_s),
         "estimated_voltage_points": n_voltage,
         "estimated_frequency_points": n_freq if mode in {"frequency_sweep", "complete_ac"} else 0,
+        "estimated_ac_samples_per_frequency": ac_samples if mode in {"frequency_sweep", "complete_ac"} else 0,
         "estimated_overhead_s": overhead_s,
         "auto_smu_step_cached_points": int(voltage_plan.get("cached_points", 0)),
         "auto_smu_step_missing_points": int(voltage_plan.get("missing_points", 0)),
@@ -881,12 +915,6 @@ def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, 
                 combined["Z_imag"] = combined["Z_imag_ohm"]
             if "Z_mag" not in combined:
                 combined["Z_mag"] = combined.get("Z_magnitude_ohm", combined.get("Z_mag_ohm", ""))
-            if "Rj" not in combined and "R_junction_ohm" in combined:
-                combined["Rj"] = combined["R_junction_ohm"]
-            if "Cj" not in combined and "C_junction_fit_F" in combined:
-                combined["Cj"] = combined["C_junction_fit_F"]
-            if "C_parallel" not in combined:
-                combined["C_parallel"] = combined.get("C_parallel_median_F", combined.get("C_uncorrected_F", ""))
             if "Phase_Z" not in combined and "Z_phase_deg" in combined:
                 combined["Phase_Z"] = combined["Z_phase_deg"]
             if "Vac_pv" not in combined and "Vac_mag_corrected_V" in combined:
@@ -978,84 +1006,12 @@ def datasets_from_uploaded_rows(rows: List[Dict[str, Any]], fallback_name: str) 
     return {fallback_name: rows}
 
 
-def add_derived_rj_to_complete_ac_datasets(
-    datasets: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, List[Dict[str, Any]]]:
-    detailed_rows = datasets.get("cv_frequency_sweeps", [])
-    if not detailed_rows:
-        return datasets
-
-    def group_key(row: Dict[str, Any]) -> str:
-        for key in ("sweep_index", "smu_voltage_V", "V_SMU", "SMU_V"):
-            value = row.get(key)
-            if value not in (None, ""):
-                return f"{key}:{value}"
-        return ""
-
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for row in detailed_rows:
-        key = group_key(row)
-        if key:
-            grouped.setdefault(key, []).append(row)
-
-    estimates: Dict[str, Dict[str, Any]] = {}
-    circuit_fits: Dict[str, Dict[str, Any]] = {}
-    for key, rows in grouped.items():
-        normalized = []
-        for row in rows:
-            frequency = safe_float(row.get("f_ac_Hz", row.get("frequency_hz", row.get("frequency"))))
-            z_real = safe_float(row.get("Z_real_ohm", row.get("Z_real")))
-            z_imag = safe_float(row.get("Z_imag_ohm", row.get("Z_imag")))
-            raw_capacitance = safe_float(row.get("C_uncorrected_F", row.get("C_parallel")))
-            if frequency is not None and z_real is not None and z_imag is not None:
-                normalized.append({
-                    "f_ac_Hz": frequency,
-                    "Z_real_ohm": z_real,
-                    "Z_imag_ohm": z_imag,
-                    "C_uncorrected_F": raw_capacitance,
-                })
-        estimate = backend.junction_resistance_from_rows(normalized)
-        circuit_fit = backend.equivalent_circuit_fit_from_rows(normalized)
-        if estimate is not None:
-            estimates[key] = estimate
-        if circuit_fit is not None:
-            circuit_fits[key] = circuit_fit
-        for row in rows:
-            if estimate is not None:
-                row.update(estimate)
-                row["Rj"] = estimate["R_junction_ohm"]
-            if circuit_fit is not None:
-                row["R_junction_ohm"] = circuit_fit["R_junction_fit_ohm"]
-                row["R_series_estimate_ohm"] = circuit_fit["R_series_fit_ohm"]
-                row["Rj"] = circuit_fit["R_junction_fit_ohm"]
-
-    for row in datasets.get("cv_curve", []):
-        key = group_key(row)
-        estimate = estimates.get(key)
-        if estimate:
-            row.update(estimate)
-            row["Rj"] = estimate["R_junction_ohm"]
-        circuit_fit = circuit_fits.get(key)
-        if circuit_fit:
-            previous_capacitance = safe_float(row.get("C_final_median_F"))
-            if previous_capacitance is not None and safe_float(row.get("C_parallel_median_F")) is None:
-                row["C_parallel_median_F"] = previous_capacitance
-            row.update(circuit_fit)
-            row["R_junction_ohm"] = circuit_fit["R_junction_fit_ohm"]
-            row["R_series_estimate_ohm"] = circuit_fit["R_series_fit_ohm"]
-            row["Rj"] = circuit_fit["R_junction_fit_ohm"]
-            row["Cj"] = circuit_fit["C_junction_fit_F"]
-            row["C_final_median_F"] = circuit_fit["C_junction_fit_F"]
-            row["C_final_mean_F"] = circuit_fit["C_junction_fit_F"]
-            row["C_final_std_F"] = float("nan")
-            row["C_final_method"] = "equivalent_circuit_cnls"
-    return datasets
-
-
 def run_measurement(payload: Dict[str, Any]) -> None:
     mode = payload.get("mode", "standard_dc")
     speed = payload.get("speed", "Medium")
     settings = settings_from_payload(payload)
+    if mode != "live_lockin":
+        settings.auto_smu_range = True
     selected = MODE_TO_SELECTION.get(mode, MODE_TO_SELECTION["standard_dc"])
 
     def live_callback(name: str, rows: List[Dict[str, Any]]) -> None:
@@ -1068,11 +1024,9 @@ def run_measurement(payload: Dict[str, Any]) -> None:
             return dict(STATE.live_control)
 
     try:
-        with STATE.lock:
-            existing_calibration = dict(STATE.smu_calibration)
         requires_smu_calibration = mode != "live_lockin"
-        if requires_smu_calibration and settings.auto_smu_range and not existing_calibration:
-            terminal_log("Automatic SMU range is enabled and no calibration exists. Calibrating before measurement...")
+        if requires_smu_calibration:
+            terminal_log("Calibrating the solar-cell SMU range before measurement...")
             with STATE.lock:
                 STATE.mode = "smu_calibration"
                 STATE.progress = calibration_progress(0.0, 10.0)
@@ -1087,17 +1041,13 @@ def run_measurement(payload: Dict[str, Any]) -> None:
                     "progress_base_percent": 10.0,
                     "progress_end_percent": 100.0,
                 }, settings, calibration)
-            terminal_log("Automatic SMU range calibration complete. Continuing measurement.")
-        elif requires_smu_calibration and settings.auto_smu_range and existing_calibration:
-            apply_calibration_to_settings(settings, existing_calibration)
+            terminal_log("Solar-cell SMU range calibration complete. Continuing measurement.")
 
         with STATE.lock:
             STATE.mode = mode
         terminal_log(f"Starting {mode} measurement with {speed} speed.")
         engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback, live_control_getter)
         result = engine.run_selected(selected, speed)
-        if mode == "complete_ac":
-            add_derived_rj_to_complete_ac_datasets(result.datasets)
         combined = save_combined_csv(mode, speed, result.datasets, settings.output_dir)
         with STATE.lock:
             STATE.status = "completed"
@@ -1184,13 +1134,12 @@ def start():
     mode = payload.get("mode", "standard_dc")
     speed = payload.get("speed", "Medium")
     settings = settings_from_payload(payload)
+    if mode != "live_lockin":
+        settings.auto_smu_range = True
     with STATE.lock:
         if STATE.status == "running":
             return jsonify({"ok": False, "error": "A measurement is already running."}), 409
-        existing_calibration = dict(STATE.smu_calibration)
-        needs_calibration = bool(mode != "live_lockin" and settings.auto_smu_range and not existing_calibration)
-        if mode != "live_lockin" and settings.auto_smu_range and existing_calibration:
-            apply_calibration_to_settings(settings, existing_calibration)
+        needs_calibration = mode != "live_lockin"
         STATE.status = "running"
         STATE.mode = mode
         STATE.speed = speed
@@ -1207,7 +1156,7 @@ def start():
             "freq_start_hz": settings.freq_start_hz,
             "freq_stop_hz": settings.freq_stop_hz,
         }
-        STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings, existing_calibration)
+        STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings)
         STATE.live_control = {
             "smu_voltage_v": settings.manual_smu_voltage_v,
             "fg_frequency_hz": settings.freq_start_hz,
@@ -1293,11 +1242,13 @@ def save_custom_speed_profile():
         if value is not None:
             if profile_key == "vdc_pv_step_size_v" and value <= 0:
                 return jsonify({"ok": False, "error": "Custom Vdc_pv Step Size must be positive."}), 400
-            if profile_key in {"frequency_points_per_decade", "minimum_frequency_points"} and value <= 0:
-                return jsonify({"ok": False, "error": "Custom frequency point settings must be positive."}), 400
+            if profile_key in {"frequency_points_per_decade", "minimum_frequency_points", "ac_samples_per_frequency"} and value <= 0:
+                return jsonify({"ok": False, "error": "Custom frequency point and AC sample settings must be positive."}), 400
+            if profile_key == "ac_max_impedance_spread_percent" and value <= 0:
+                return jsonify({"ok": False, "error": "Custom maximum AC impedance spread must be positive."}), 400
             if profile_key != "vdc_pv_step_size_v" and value < 0:
                 return jsonify({"ok": False, "error": "Custom settling times cannot be negative."}), 400
-            if profile_key in {"frequency_points_per_decade", "minimum_frequency_points"}:
+            if profile_key in {"frequency_points_per_decade", "minimum_frequency_points", "ac_samples_per_frequency"}:
                 custom[kind][profile_key] = max(1, int(round(value)))
             else:
                 custom[kind][profile_key] = value
@@ -1344,8 +1295,6 @@ def upload():
     dataset_name = path.stem
     inferred_mode = infer_mode_from_rows(rows)
     datasets = datasets_from_uploaded_rows(rows, dataset_name)
-    if inferred_mode == "complete_ac":
-        add_derived_rj_to_complete_ac_datasets(datasets)
     uploaded_frequencies = {
         value
         for row in rows
@@ -1395,8 +1344,20 @@ def download_combined():
 
 
 if __name__ == "__main__":
+    browser_url = "http://127.0.0.1:5000"
+
+    def open_browser() -> None:
+        try:
+            opened = webbrowser.open_new_tab(browser_url)
+            terminal_log(
+                f"Browser {'opened' if opened else 'open request sent'}: {browser_url}"
+            )
+        except Exception as exc:
+            terminal_log(f"WARNING: Could not open browser automatically: {exc}")
+
     terminal_log(f"Script: {Path(__file__).resolve()}")
     terminal_log(f"Working directory: {Path.cwd()}")
     configure_led_generator(settings_with_config_defaults(), "Startup", raise_errors=False)
-    terminal_log("Open browser: http://127.0.0.1:5000")
+    terminal_log(f"Opening browser automatically: {browser_url}")
+    threading.Timer(1.0, open_browser).start()
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

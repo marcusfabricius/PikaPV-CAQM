@@ -8,7 +8,7 @@ Run:
     python gui-v1.py
 
 Required packages:
-    pip install pyvisa matplotlib scipy
+    pip install pyvisa matplotlib
 
 Notes:
     - PyVISA needs the correct VISA backend installed on the measurement PC.
@@ -30,7 +30,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -40,11 +40,6 @@ try:
     import pyvisa  # type: ignore
 except Exception:  # pragma: no cover
     pyvisa = None
-
-try:
-    from scipy.optimize import least_squares  # type: ignore
-except Exception:  # pragma: no cover
-    least_squares = None
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
@@ -234,147 +229,80 @@ def capacitance_from_impedance(
     return c_uncorrected, y_complex.real, y_complex.imag
 
 
-def junction_resistance_from_rows(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    z_real_by_frequency: Dict[float, List[float]] = {}
-    for row in rows:
-        frequency = safe_log_value(row.get("f_ac_Hz"))
-        z_real = safe_log_value(row.get("Z_real_ohm"))
-        if frequency is None or z_real is None or frequency <= 0:
-            continue
-        z_real_by_frequency.setdefault(frequency, []).append(z_real)
-    if len(z_real_by_frequency) < 2:
+def circular_mean_deg(values: List[float]) -> float:
+    if not values:
+        return float("nan")
+    sin_mean = sum(math.sin(math.radians(value)) for value in values) / len(values)
+    cos_mean = sum(math.cos(math.radians(value)) for value in values) / len(values)
+    return wrap_phase_deg(math.degrees(math.atan2(sin_mean, cos_mean)))
+
+
+def aggregate_impedance_samples(
+    samples: List[Dict[str, float]],
+    max_spread_percent: float,
+) -> Optional[Dict[str, Any]]:
+    """Reject unstable samples and median-average the accepted complex impedance."""
+    if not samples:
         return None
 
-    low_frequency = min(z_real_by_frequency)
-    high_frequency = max(z_real_by_frequency)
-    low_z_real = statistics.median(z_real_by_frequency[low_frequency])
-    high_z_real = statistics.median(z_real_by_frequency[high_frequency])
-    frequency_span_decades = math.log10(high_frequency / low_frequency)
-    r_junction = low_z_real - high_z_real
-    warnings = []
-    if frequency_span_decades < 1.0:
-        warnings.append("frequency span is less than one decade")
-    if r_junction < 0:
-        warnings.append("low-frequency Z_real is below high-frequency Z_real")
-    return {
-        "R_junction_ohm": r_junction,
-        "R_junction_endpoint_estimate_ohm": r_junction,
-        "R_series_estimate_ohm": high_z_real,
-        "R_series_endpoint_estimate_ohm": high_z_real,
-        "Rj_low_frequency_Hz": low_frequency,
-        "Rj_high_frequency_Hz": high_frequency,
-        "Rj_low_frequency_Z_real_ohm": low_z_real,
-        "Rj_high_frequency_Z_real_ohm": high_z_real,
-        "Rj_frequency_span_decades": frequency_span_decades,
-        "Rj_estimate_method": "low_frequency_Z_real_minus_high_frequency_Z_real",
-        "Rj_estimate_warning": "; ".join(warnings),
-    }
-
-
-def equivalent_circuit_fit_from_rows(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Fit Rs + j*w*Ls + (Rj || Cj) to a complete impedance spectrum."""
-    if least_squares is None:
-        return None
-
-    values_by_frequency: Dict[float, Dict[str, List[float]]] = {}
-    positive_raw_capacitances: List[float] = []
-    for row in rows:
-        frequency = safe_log_value(row.get("f_ac_Hz"))
-        z_real = safe_log_value(row.get("Z_real_ohm"))
-        z_imag = safe_log_value(row.get("Z_imag_ohm"))
-        raw_capacitance = safe_log_value(row.get("C_uncorrected_F"))
-        if frequency is None or z_real is None or z_imag is None or frequency <= 0:
-            continue
-        bucket = values_by_frequency.setdefault(frequency, {"z_real": [], "z_imag": []})
-        bucket["z_real"].append(z_real)
-        bucket["z_imag"].append(z_imag)
-        if raw_capacitance is not None and raw_capacitance > 0:
-            positive_raw_capacitances.append(raw_capacitance)
-
-    if len(values_by_frequency) < 4:
-        return None
-
-    spectrum = [
-        (
-            frequency,
-            statistics.median(values["z_real"]),
-            statistics.median(values["z_imag"]),
+    center_real = statistics.median(sample["Z_real_ohm"] for sample in samples)
+    center_imag = statistics.median(sample["Z_imag_ohm"] for sample in samples)
+    center_magnitude = max(math.hypot(center_real, center_imag), 1e-30)
+    spread_percent = [
+        math.hypot(
+            sample["Z_real_ohm"] - center_real,
+            sample["Z_imag_ohm"] - center_imag,
         )
-        for frequency, values in sorted(values_by_frequency.items())
+        / center_magnitude
+        * 100.0
+        for sample in samples
     ]
-    z_real_values = [point[1] for point in spectrum]
-    z_magnitudes = [math.hypot(point[1], point[2]) for point in spectrum]
-
-    lower = [1e-9, 1e-9, 1e-12, 1e-12]
-    upper = [1e5, 1e7, 10.0, 10.0]
-    rs_initial = max(lower[0], min(z_real_values))
-    rj_initial = max(lower[1], max(z_real_values) - rs_initial)
-    cj_initial = statistics.median(positive_raw_capacitances) if positive_raw_capacitances else 1e-6
-    ls_initial = max(
-        lower[3],
-        max(point[2] / (2.0 * math.pi * point[0]) for point in spectrum),
-    )
-    initial = [rs_initial, rj_initial, cj_initial, ls_initial]
-    initial = [
-        min(max(value, low * 1.000001), high / 1.000001)
-        for value, low, high in zip(initial, lower, upper)
+    accepted = [
+        sample
+        for sample, spread in zip(samples, spread_percent)
+        if len(samples) == 1 or spread <= max_spread_percent
     ]
+    required_accepted = max(1, len(samples) // 2 + 1)
+    stable = len(accepted) >= required_accepted
+    if not accepted:
+        closest_index = min(range(len(samples)), key=lambda index: spread_percent[index])
+        accepted = [samples[closest_index]]
 
-    def unpack(log_parameters: Iterable[float]) -> Tuple[float, float, float, float]:
-        rs, rj, cj, ls = [math.exp(float(value)) for value in log_parameters]
-        return rs, rj, cj, ls
+    z_real = statistics.median(sample["Z_real_ohm"] for sample in accepted)
+    z_imag = statistics.median(sample["Z_imag_ohm"] for sample in accepted)
+    z_magnitude = math.hypot(z_real, z_imag)
+    z_phase = wrap_phase_deg(math.degrees(math.atan2(z_imag, z_real)))
 
-    def residuals(log_parameters: Iterable[float]) -> List[float]:
-        rs, rj, cj, ls = unpack(log_parameters)
-        real_residuals: List[float] = []
-        imag_residuals: List[float] = []
-        for frequency, measured_real, measured_imag in spectrum:
-            omega = 2.0 * math.pi * frequency
-            denominator = 1.0 + (rj * omega * cj) ** 2
-            predicted_real = rs + rj / denominator
-            predicted_imag = omega * ls - (rj * rj * omega * cj) / denominator
-            real_residuals.append(predicted_real - measured_real)
-            imag_residuals.append(predicted_imag - measured_imag)
-        return real_residuals + imag_residuals
-
-    try:
-        result = least_squares(
-            residuals,
-            [math.log(value) for value in initial],
-            bounds=(
-                [math.log(value) for value in lower],
-                [math.log(value) for value in upper],
-            ),
-            max_nfev=10000,
-        )
-        rs, rj, cj, ls = unpack(result.x)
-        fit_residuals = residuals(result.x)
-    except Exception:
-        return None
-
-    if not all(math.isfinite(value) and value > 0 for value in (rs, rj, cj, ls)):
-        return None
-
-    rmse = math.sqrt(sum(value * value for value in fit_residuals) / len(fit_residuals))
-    magnitude_scale = statistics.median(z_magnitudes)
-    normalized_rmse = rmse / magnitude_scale if magnitude_scale > 0 else float("nan")
-    warnings: List[str] = []
-    if not result.success:
-        warnings.append(str(result.message))
-    if math.isfinite(normalized_rmse) and normalized_rmse > 0.20:
-        warnings.append("equivalent-circuit fit error exceeds 20% of median |Z|")
-
-    return {
-        "C_junction_fit_F": cj,
-        "R_junction_fit_ohm": rj,
-        "R_series_fit_ohm": rs,
-        "L_series_fit_H": ls,
-        "equivalent_circuit_fit_rmse_ohm": rmse,
-        "equivalent_circuit_fit_normalized_rmse": normalized_rmse,
-        "equivalent_circuit_fit_frequency_points": len(spectrum),
-        "equivalent_circuit_fit_method": "CNLS: Rs + j*w*Ls + (Rj || Cj)",
-        "equivalent_circuit_fit_warning": "; ".join(warnings),
+    result: Dict[str, Any] = {
+        "Z_real_ohm": z_real,
+        "Z_imag_ohm": z_imag,
+        "Z_magnitude_ohm": z_magnitude,
+        "Z_mag_ohm": z_magnitude,
+        "Z_phase_deg": z_phase,
+        "ac_sample_count_collected": len(samples),
+        "ac_sample_count_accepted": len(accepted),
+        "ac_sample_count_rejected": len(samples) - len(accepted),
+        "ac_sample_required_accepted": required_accepted,
+        "ac_impedance_spread_max_percent": max(spread_percent),
+        "ac_impedance_spread_median_percent": statistics.median(spread_percent),
+        "ac_impedance_samples_stable": stable,
+        "ac_aggregation": "median accepted complex impedance",
     }
+    for key in (
+        "Vac_mag_raw_V",
+        "Vac_mag_corrected_V",
+        "Iac_mag_raw_A",
+        "Iac_mag_corrected_A",
+    ):
+        result[key] = statistics.median(sample[key] for sample in accepted)
+    for key in (
+        "Vac_phase_raw_deg",
+        "Vac_phase_corrected_deg",
+        "Iac_phase_raw_deg",
+        "Iac_phase_corrected_deg",
+    ):
+        result[key] = circular_mean_deg([sample[key] for sample in accepted])
+    return result
 
 
 def capacitance_scale_factor(unit: str) -> Tuple[float, str]:
@@ -421,15 +349,17 @@ class SpeedLevel:
     label: str
     points_per_decade: int
     minimum_frequency_points: int
-    repeats: int
+    ac_samples_per_frequency: int
+    ac_max_impedance_spread_percent: float
+    ac_sample_interval_s: float
     settling_multiplier: float
 
 
 SPEED_LEVELS: Dict[str, SpeedLevel] = {
-    "Custom": SpeedLevel("Custom", points_per_decade=8, minimum_frequency_points=8, repeats=2, settling_multiplier=1.0),
-    "Fast": SpeedLevel("Fast", points_per_decade=4, minimum_frequency_points=6, repeats=1, settling_multiplier=1.0),
-    "Medium": SpeedLevel("Medium", points_per_decade=8, minimum_frequency_points=10, repeats=2, settling_multiplier=1.0),
-    "Slow": SpeedLevel("Slow", points_per_decade=16, minimum_frequency_points=16, repeats=4, settling_multiplier=1.0),
+    "Custom": SpeedLevel("Custom", 8, 8, 3, 8.0, 0.10, 1.0),
+    "Fast": SpeedLevel("Fast", 4, 6, 1, 15.0, 0.00, 1.0),
+    "Medium": SpeedLevel("Medium", 8, 10, 3, 8.0, 0.10, 1.0),
+    "Slow": SpeedLevel("Slow", 16, 16, 5, 4.0, 0.20, 1.0),
 }
 
 AUTO_VDC_STEP_BY_SPEED: Dict[str, float] = {
@@ -501,18 +431,27 @@ class Settings:
     custom_frequency_sweep_settling_after_smu_s: float = 1.0
     custom_frequency_sweep_settling_after_freq_s: float = 4.0
     custom_frequency_sweep_lockin_time_constant_wait_s: float = 0.0
+    custom_frequency_sweep_ac_samples_per_frequency: int = 3
+    custom_frequency_sweep_ac_max_impedance_spread_percent: float = 8.0
+    custom_frequency_sweep_ac_sample_interval_s: float = 0.10
     custom_cv_vdc_pv_step_size_v: float = 0.025
     custom_cv_frequency_points_per_decade: int = 8
     custom_cv_minimum_frequency_points: int = 8
     custom_cv_settling_after_smu_s: float = 1.0
     custom_cv_settling_after_freq_s: float = 4.0
     custom_cv_lockin_time_constant_wait_s: float = 0.0
+    custom_cv_ac_samples_per_frequency: int = 3
+    custom_cv_ac_max_impedance_spread_percent: float = 8.0
+    custom_cv_ac_sample_interval_s: float = 0.10
     custom_vdc_pv_step_size_v: float = 0.025
     custom_frequency_points_per_decade: int = 8
     custom_minimum_frequency_points: int = 8
     settling_after_smu_s: float = 1.0
     settling_after_freq_s: float = 4.0
     lockin_time_constant_wait_s: float = 0.0
+    ac_samples_per_frequency: int = 3
+    ac_max_impedance_spread_percent: float = 8.0
+    ac_sample_interval_s: float = 0.10
     min_iac_mag_a: float = 1e-12
 
     # LED modulation function generator
@@ -1073,6 +1012,12 @@ class MeasurementEngine:
             raise ValueError("Custom frequency points per decade must be positive.")
         if self.settings.custom_minimum_frequency_points <= 0:
             raise ValueError("Custom minimum frequency points must be positive.")
+        if self.settings.ac_samples_per_frequency < 1:
+            raise ValueError("AC samples per frequency must be at least one.")
+        if self.settings.ac_max_impedance_spread_percent <= 0:
+            raise ValueError("Maximum AC impedance spread must be positive.")
+        if self.settings.ac_sample_interval_s < 0:
+            raise ValueError("AC sample interval cannot be negative.")
         if (
             self.settings.settling_after_smu_s < 0
             or self.settings.settling_after_freq_s < 0
@@ -1107,6 +1052,26 @@ class MeasurementEngine:
                 raise ValueError(f"{label} minimum frequency points must be positive.")
             if settle_smu < 0 or settle_freq < 0 or lockin_wait < 0:
                 raise ValueError(f"{label} timing values cannot be negative.")
+        for label, samples, max_spread, sample_interval in (
+            (
+                "Custom frequency sweep",
+                self.settings.custom_frequency_sweep_ac_samples_per_frequency,
+                self.settings.custom_frequency_sweep_ac_max_impedance_spread_percent,
+                self.settings.custom_frequency_sweep_ac_sample_interval_s,
+            ),
+            (
+                "Custom CV curve",
+                self.settings.custom_cv_ac_samples_per_frequency,
+                self.settings.custom_cv_ac_max_impedance_spread_percent,
+                self.settings.custom_cv_ac_sample_interval_s,
+            ),
+        ):
+            if samples < 1:
+                raise ValueError(f"{label} AC samples per frequency must be at least one.")
+            if max_spread <= 0:
+                raise ValueError(f"{label} maximum AC impedance spread must be positive.")
+            if sample_interval < 0:
+                raise ValueError(f"{label} AC sample interval cannot be negative.")
         if self.settings.max_outlier_retries < 0:
             raise ValueError("Maximum outlier retries must be zero or positive.")
         if self.settings.z_real_outlier_min_vdc_pv_v < 0:
@@ -1123,14 +1088,21 @@ class MeasurementEngine:
 
     def sync_custom_speed_profile_from_settings(self) -> None:
         AUTO_VDC_STEP_BY_SPEED["Custom"] = float(self.settings.custom_vdc_pv_step_size_v)
-        current = SPEED_LEVELS["Custom"]
         SPEED_LEVELS["Custom"] = SpeedLevel(
             "Custom",
             points_per_decade=max(1, int(self.settings.custom_frequency_points_per_decade)),
             minimum_frequency_points=max(1, int(self.settings.custom_minimum_frequency_points)),
-            repeats=current.repeats,
+            ac_samples_per_frequency=max(1, int(self.settings.ac_samples_per_frequency)),
+            ac_max_impedance_spread_percent=float(self.settings.ac_max_impedance_spread_percent),
+            ac_sample_interval_s=max(0.0, float(self.settings.ac_sample_interval_s)),
             settling_multiplier=1.0,
         )
+
+    def apply_ac_accuracy_for_speed(self, speed_name: str) -> None:
+        level = SPEED_LEVELS.get(speed_name, SPEED_LEVELS["Medium"])
+        self.settings.ac_samples_per_frequency = max(1, int(level.ac_samples_per_frequency))
+        self.settings.ac_max_impedance_spread_percent = float(level.ac_max_impedance_spread_percent)
+        self.settings.ac_sample_interval_s = max(0.0, float(level.ac_sample_interval_s))
 
     def auto_smu_cache_key(self, speed_name: str, start_v: float, stop_v: float) -> Tuple[str, float, float, float]:
         return (
@@ -1377,9 +1349,14 @@ class MeasurementEngine:
                     level.minimum_frequency_points,
                 ))
             settle_freq = self.settings.settling_after_freq_s
-            per_freq_s = settle_freq + self.settings.lockin_time_constant_wait_s + 0.15
+            per_freq_s = (
+                settle_freq
+                + self.settings.lockin_time_constant_wait_s
+                + level.ac_samples_per_frequency * 0.15
+                + max(0, level.ac_samples_per_frequency - 1) * level.ac_sample_interval_s
+            )
             total_s = pre_s + n_voltage * self.settings.settling_after_smu_s
-            total_s += n_voltage * n_freq * level.repeats * per_freq_s
+            total_s += n_voltage * n_freq * per_freq_s
             estimates[name] = format_duration(total_s)
         return estimates
 
@@ -1738,8 +1715,8 @@ class MeasurementEngine:
         session.strict_write(session.fg, f"FREQ {f_ac}", "Function generator")
         time.sleep(settling_s + self.settings.lockin_time_constant_wait_s)
         total_attempts = self.settings.max_outlier_retries + 1
-        last_iac_mag = 0.0
         last_outlier_row: Optional[Dict[str, Any]] = None
+        last_failure_message = ""
         should_remeasure_z_real = self.settings.remeasure_z_real_outliers if remeasure_z_real_outliers is None else remeasure_z_real_outliers
         for attempt in range(1, total_attempts + 1):
             self.check_stop()
@@ -1754,27 +1731,107 @@ class MeasurementEngine:
                     f_ac,
                     session.dc_quality_fields(),
                 )
-            ph = session.read_ac_phasors()
-            iac_mag = ph["Iac_mag_corrected_A"]
-            last_iac_mag = iac_mag
-            if iac_mag <= self.settings.min_iac_mag_a:
-                self.log(f"Frequency {f_ac:.6g} Hz skipped, Iac too small.")
-                return None
+            requested_samples = max(1, int(self.settings.ac_samples_per_frequency))
+            impedance_samples: List[Dict[str, float]] = []
+            sample_errors: List[str] = []
+            for sample_index in range(requested_samples):
+                self.check_stop()
+                try:
+                    ph = session.read_ac_phasors()
+                    iac_mag = ph["Iac_mag_corrected_A"]
+                    if iac_mag <= self.settings.min_iac_mag_a:
+                        sample_errors.append(
+                            f"Iac {iac_mag:.6e} A <= minimum {self.settings.min_iac_mag_a:.6e} A"
+                        )
+                    else:
+                        z_mag, z_phase, z_real, z_imag = impedance_from_mag_phase(
+                            ph["Vac_mag_corrected_V"],
+                            ph["Vac_phase_corrected_deg"],
+                            ph["Iac_mag_corrected_A"],
+                            ph["Iac_phase_corrected_deg"],
+                            self.settings.min_iac_mag_a,
+                        )
+                        impedance_samples.append({
+                            **ph,
+                            "Z_real_ohm": z_real,
+                            "Z_imag_ohm": z_imag,
+                            "Z_magnitude_ohm": z_mag,
+                            "Z_mag_ohm": z_mag,
+                            "Z_phase_deg": z_phase,
+                        })
+                except Exception as exc:
+                    sample_errors.append(str(exc))
+                if sample_index + 1 < requested_samples and self.settings.ac_sample_interval_s > 0:
+                    time.sleep(self.settings.ac_sample_interval_s)
 
-            z_mag, z_phase, z_real, z_imag = impedance_from_mag_phase(
-                ph["Vac_mag_corrected_V"],
-                ph["Vac_phase_corrected_deg"],
-                ph["Iac_mag_corrected_A"],
-                ph["Iac_phase_corrected_deg"],
-                self.settings.min_iac_mag_a,
+            if not impedance_samples:
+                if len(sample_errors) >= requested_samples and any(
+                    "failed to query" in error.lower() or "invalid session" in error.lower()
+                    for error in sample_errors
+                ):
+                    raise RuntimeError(
+                        f"All {requested_samples} AC samples failed at {f_ac:.6g} Hz. "
+                        f"Last error: {sample_errors[-1]}"
+                    )
+                last_failure_message = (
+                    f"Frequency {f_ac:.6g} Hz skipped, no valid AC samples "
+                    f"({len(sample_errors)} rejected)."
+                )
+                self.log(last_failure_message)
+                if attempt < total_attempts:
+                    time.sleep(self.settings.outlier_retry_wait_s + self.settings.lockin_time_constant_wait_s)
+                    continue
+                break
+
+            aggregate = aggregate_impedance_samples(
+                impedance_samples,
+                self.settings.ac_max_impedance_spread_percent,
             )
+            if aggregate is None:
+                return None
+            required_samples = max(1, requested_samples // 2 + 1)
+            aggregate["ac_sample_count_requested"] = requested_samples
+            aggregate["ac_sample_required_accepted"] = required_samples
+            aggregate["ac_sample_read_errors"] = len(sample_errors)
+            aggregate["ac_sample_error_summary"] = "; ".join(sample_errors)
+            aggregate["ac_max_impedance_spread_allowed_percent"] = self.settings.ac_max_impedance_spread_percent
+            aggregate["ac_sample_interval_s"] = self.settings.ac_sample_interval_s
+            aggregate["ac_impedance_samples_stable"] = (
+                aggregate["ac_sample_count_accepted"] >= required_samples
+            )
+            quality_reasons: List[str] = []
+            if aggregate["ac_sample_count_rejected"]:
+                quality_reasons.append(
+                    f"{aggregate['ac_sample_count_rejected']} impedance sample(s) rejected by spread"
+                )
+            if sample_errors:
+                quality_reasons.append(f"{len(sample_errors)} AC sample read(s) invalid")
+            aggregate["ac_quality_warning"] = bool(quality_reasons)
+            aggregate["ac_quality_warning_reason"] = "; ".join(quality_reasons)
+
+            z_mag = aggregate["Z_magnitude_ohm"]
+            z_phase = aggregate["Z_phase_deg"]
+            z_real = aggregate["Z_real_ohm"]
+            z_imag = aggregate["Z_imag_ohm"]
             cap_f, y_real, y_imag = capacitance_from_impedance(z_real, z_imag, f_ac)
             z_real_outlier_check_allowed = vdc >= self.settings.z_real_outlier_min_vdc_pv_v
-            is_outlier = (
+            is_z_real_outlier = (
                 should_remeasure_z_real
                 and z_real_outlier_check_allowed
                 and abs(z_real) > self.settings.max_abs_z_real_ohm
             )
+            is_ac_unstable = not aggregate["ac_impedance_samples_stable"]
+            is_outlier = is_z_real_outlier or is_ac_unstable
+            rejection_reasons: List[str] = []
+            if is_z_real_outlier:
+                rejection_reasons.append(
+                    f"Z'={z_real:.6e} ohm exceeds +/-{self.settings.max_abs_z_real_ohm:g} ohm"
+                )
+            if is_ac_unstable:
+                rejection_reasons.append(
+                    f"only {aggregate['ac_sample_count_accepted']}/{requested_samples} AC samples "
+                    f"were within {self.settings.ac_max_impedance_spread_percent:g}% of median Z"
+                )
 
             row = {
                 **base_row,
@@ -1782,7 +1839,9 @@ class MeasurementEngine:
                 "point_index": point_index,
                 "measurement_attempt": attempt,
                 "outlier_retries_before_acceptance": attempt - 1,
-                "is_rejected_Z_real_outlier": is_outlier,
+                "is_rejected_Z_real_outlier": is_z_real_outlier,
+                "is_rejected_ac_instability": is_ac_unstable,
+                "measurement_rejection_reason": "; ".join(rejection_reasons),
                 "z_real_outlier_check_allowed": z_real_outlier_check_allowed,
                 "Vdc_pv_V": vdc,
                 "Idc_adc1_raw": idc_raw,
@@ -1790,19 +1849,7 @@ class MeasurementEngine:
                 "Pdc_pv_W": vdc * idc,
                 **session.dc_quality_fields(),
                 "f_ac_Hz": f_ac,
-                "Vac_mag_raw_V": ph["Vac_mag_raw_V"],
-                "Vac_phase_raw_deg": ph["Vac_phase_raw_deg"],
-                "Vac_mag_corrected_V": ph["Vac_mag_corrected_V"],
-                "Vac_phase_corrected_deg": ph["Vac_phase_corrected_deg"],
-                "Iac_mag_raw_A": ph["Iac_mag_raw_A"],
-                "Iac_phase_raw_deg": ph["Iac_phase_raw_deg"],
-                "Iac_mag_corrected_A": ph["Iac_mag_corrected_A"],
-                "Iac_phase_corrected_deg": ph["Iac_phase_corrected_deg"],
-                "Z_real_ohm": z_real,
-                "Z_imag_ohm": z_imag,
-                "Z_magnitude_ohm": z_mag,
-                "Z_mag_ohm": z_mag,
-                "Z_phase_deg": z_phase,
+                **aggregate,
                 "Y_real_S": y_real,
                 "Y_imag_S": y_imag,
                 "C_uncorrected_F": cap_f,
@@ -1814,20 +1861,23 @@ class MeasurementEngine:
                     f"Freq {point_index:>3}/{total_points} | f={f_ac:>10.6g} Hz | "
                     f"Z'={z_real:>11.4e} ohm | Z''={z_imag:>11.4e} ohm | "
                     f"|Z|={z_mag:>11.4e} ohm | phase={z_phase:>8.3f} deg | "
-                    f"C={cap_f * scale:.6g} {unit_label} | attempt={attempt}"
+                    f"C={cap_f * scale:.6g} {unit_label} | "
+                    f"AC samples={aggregate['ac_sample_count_accepted']}/{requested_samples} | "
+                    f"spread={aggregate['ac_impedance_spread_max_percent']:.3g}% | attempt={attempt}"
                 )
                 return row
 
             rejected_rows.append(row)
             last_outlier_row = row
+            last_failure_message = "; ".join(rejection_reasons)
             self.log(
                 f"OUTLIER | f={f_ac:.6g} Hz | attempt={attempt}/{total_attempts} | "
-                f"Z'={z_real:.6e} ohm exceeds +/-{self.settings.max_abs_z_real_ohm:g} ohm"
+                + "; ".join(rejection_reasons)
             )
             if attempt < total_attempts:
                 time.sleep(self.settings.outlier_retry_wait_s + self.settings.lockin_time_constant_wait_s)
 
-        if last_iac_mag > self.settings.min_iac_mag_a:
+        if last_outlier_row is not None or last_failure_message:
             msg = (
                 f"No acceptable impedance result at f={f_ac:.6g} Hz after {total_attempts} attempts."
             )
@@ -1844,7 +1894,7 @@ class MeasurementEngine:
                 accepted_row["measurement_warning"] = msg
                 self.log("WARNING: " + msg + " Last point was kept and marked.")
                 return accepted_row
-            self.log("WARNING: " + msg + " Point skipped.")
+            self.log("WARNING: " + msg + " " + last_failure_message + " Point skipped.")
         return None
 
     def filter_capacitance_rows(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1890,6 +1940,7 @@ class MeasurementEngine:
         }
 
     def run_cv(self, speed_name: str) -> RunResult:
+        self.apply_ac_accuracy_for_speed(speed_name)
         self.validate()
         level = SPEED_LEVELS[speed_name]
         output_dir = self.settings.output_dir
@@ -1953,7 +2004,11 @@ class MeasurementEngine:
                 measured_voltage_points = []
                 smu_points = linear_points(first_smu, min(stop_smu, self.settings.smu_stop_v), self.settings.cv_smu_step_v)
                 target_vdc_step = None
-            self.log(f"Starting CV sweep with {len(smu_points)} voltage points, {len(freqs)} frequencies, {cv_repeats} pass per frequency.")
+            self.log(
+                f"Starting CV sweep with {len(smu_points)} voltage points, {len(freqs)} frequencies, "
+                f"{self.settings.ac_samples_per_frequency} AC samples per frequency, "
+                f"maximum impedance spread {self.settings.ac_max_impedance_spread_percent:g}%."
+            )
 
             for sweep_index, smu_v in enumerate(smu_points, start=1):
                 self.check_stop()
@@ -1982,24 +2037,16 @@ class MeasurementEngine:
                         "cv_speed_level": speed_name,
                         "points_per_decade": level.points_per_decade,
                         "repeats_per_frequency": cv_repeats,
+                        "ac_samples_per_frequency": self.settings.ac_samples_per_frequency,
+                        "ac_max_impedance_spread_percent": self.settings.ac_max_impedance_spread_percent,
+                        "ac_sample_interval_s": self.settings.ac_sample_interval_s,
                         "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
                         "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                         "measurement_endpoint": "negative_current",
-                        "R_junction_ohm": float("nan"),
-                        "R_series_estimate_ohm": float("nan"),
-                        "R_junction_fit_ohm": float("nan"),
-                        "R_series_fit_ohm": float("nan"),
-                        "L_series_fit_H": float("nan"),
-                        "C_junction_fit_F": float("nan"),
-                        "Rj_low_frequency_Hz": float("nan"),
-                        "Rj_high_frequency_Hz": float("nan"),
                         "C_final_median_F": float("nan"),
                         "C_final_mean_F": float("nan"),
                         "C_final_std_F": float("nan"),
                         "C_final_method": "",
-                        "C_parallel_median_F": float("nan"),
-                        "C_parallel_mean_F": float("nan"),
-                        "C_parallel_std_F": float("nan"),
                         "filter_used_points": 0,
                         "filter_candidate_points": 0,
                         "filter_frequency_min_Hz": float("nan"),
@@ -2062,8 +2109,6 @@ class MeasurementEngine:
                 endpoint_idc = negative_current_endpoint.idc if negative_current_endpoint is not None else idc0
 
                 filt = self.filter_capacitance_rows(rows_for_voltage)
-                rj_estimate = junction_resistance_from_rows(rows_for_voltage)
-                circuit_fit = equivalent_circuit_fit_from_rows(rows_for_voltage)
                 vdc_values = [r["Vdc_pv_V"] for r in rows_for_voltage if math.isfinite(r["Vdc_pv_V"])]
                 idc_values = [r["Idc_pv_A"] for r in rows_for_voltage if math.isfinite(r["Idc_pv_A"])]
                 cv_row: Dict[str, Any] = {
@@ -2079,64 +2124,20 @@ class MeasurementEngine:
                     "cv_speed_level": speed_name,
                     "points_per_decade": level.points_per_decade,
                     "repeats_per_frequency": cv_repeats,
+                    "ac_samples_per_frequency": self.settings.ac_samples_per_frequency,
+                    "ac_max_impedance_spread_percent": self.settings.ac_max_impedance_spread_percent,
+                    "ac_sample_interval_s": self.settings.ac_sample_interval_s,
                     "auto_smu_step_by_speed": self.auto_smu_step_enabled(),
                     "target_vdc_step_V": target_vdc_step if target_vdc_step is not None else "",
                     "measurement_endpoint": "negative_current" if negative_current_endpoint is not None else "",
                 }
-                if rj_estimate:
-                    cv_row.update(rj_estimate)
-                    self.log(
-                        f"Rj endpoint estimate | Vdc={cv_row['Vdc_pv_median_V']:.6e} V | "
-                        f"Rj={rj_estimate['R_junction_ohm']:.6e} ohm | "
-                        f"f_low={rj_estimate['Rj_low_frequency_Hz']:.6g} Hz | "
-                        f"f_high={rj_estimate['Rj_high_frequency_Hz']:.6g} Hz"
-                    )
-                else:
-                    cv_row.update({
-                        "R_junction_ohm": float("nan"),
-                        "R_junction_endpoint_estimate_ohm": float("nan"),
-                        "R_series_estimate_ohm": float("nan"),
-                        "R_series_endpoint_estimate_ohm": float("nan"),
-                        "Rj_low_frequency_Hz": float("nan"),
-                        "Rj_high_frequency_Hz": float("nan"),
-                        "Rj_low_frequency_Z_real_ohm": float("nan"),
-                        "Rj_high_frequency_Z_real_ohm": float("nan"),
-                    })
-
-                if circuit_fit:
-                    cv_row.update(circuit_fit)
-                    cv_row["R_junction_ohm"] = circuit_fit["R_junction_fit_ohm"]
-                    cv_row["R_series_estimate_ohm"] = circuit_fit["R_series_fit_ohm"]
-                    self.log(
-                        f"Equivalent-circuit fit | Vdc={cv_row['Vdc_pv_median_V']:.6e} V | "
-                        f"Cj={circuit_fit['C_junction_fit_F']:.6e} F | "
-                        f"Rj={circuit_fit['R_junction_fit_ohm']:.6e} ohm | "
-                        f"Rs={circuit_fit['R_series_fit_ohm']:.6e} ohm | "
-                        f"Ls={circuit_fit['L_series_fit_H']:.6e} H"
-                    )
-                    if circuit_fit["equivalent_circuit_fit_warning"]:
-                        self.log(
-                            "WARNING: Equivalent-circuit fit: "
-                            + circuit_fit["equivalent_circuit_fit_warning"]
-                        )
-                else:
-                    cv_row.update({
-                        "C_junction_fit_F": float("nan"),
-                        "R_junction_fit_ohm": float("nan"),
-                        "R_series_fit_ohm": float("nan"),
-                        "L_series_fit_H": float("nan"),
-                        "equivalent_circuit_fit_rmse_ohm": float("nan"),
-                        "equivalent_circuit_fit_normalized_rmse": float("nan"),
-                        "equivalent_circuit_fit_frequency_points": 0,
-                        "equivalent_circuit_fit_method": "",
-                        "equivalent_circuit_fit_warning": "",
-                    })
 
                 if filt:
                     cv_row.update({
-                        "C_parallel_median_F": filt["final_median_F"],
-                        "C_parallel_mean_F": filt["final_mean_F"],
-                        "C_parallel_std_F": filt["final_std_F"],
+                        "C_final_median_F": filt["final_median_F"],
+                        "C_final_mean_F": filt["final_mean_F"],
+                        "C_final_std_F": filt["final_std_F"],
+                        "C_final_method": "filtered_frequency_median",
                         "filter_used_points": filt["used_count"],
                         "filter_candidate_points": filt["candidate_count"],
                         "filter_frequency_min_Hz": filt["frequency_min_Hz"],
@@ -2144,34 +2145,22 @@ class MeasurementEngine:
                     })
                 else:
                     cv_row.update({
-                        "C_parallel_median_F": float("nan"),
-                        "C_parallel_mean_F": float("nan"),
-                        "C_parallel_std_F": float("nan"),
+                        "C_final_median_F": float("nan"),
+                        "C_final_mean_F": float("nan"),
+                        "C_final_std_F": float("nan"),
+                        "C_final_method": "",
                         "filter_used_points": 0,
                         "filter_candidate_points": 0,
                         "filter_frequency_min_Hz": float("nan"),
                         "filter_frequency_max_Hz": float("nan"),
                     })
 
-                if circuit_fit:
-                    final_capacitance = circuit_fit["C_junction_fit_F"]
-                    final_method = "equivalent_circuit_cnls"
-                    final_std = float("nan")
-                elif filt:
+                if filt:
                     final_capacitance = filt["final_median_F"]
-                    final_method = "parallel_capacitance_frequency_median_fallback"
-                    final_std = filt["final_std_F"]
+                    final_method = "filtered_frequency_median"
                 else:
                     final_capacitance = float("nan")
                     final_method = ""
-                    final_std = float("nan")
-
-                cv_row.update({
-                    "C_final_median_F": final_capacitance,
-                    "C_final_mean_F": final_capacitance,
-                    "C_final_std_F": final_std,
-                    "C_final_method": final_method,
-                })
                 if math.isfinite(final_capacitance):
                     scale, unit_label = capacitance_scale_factor(self.settings.capacitance_unit)
                     self.log(
@@ -2273,6 +2262,7 @@ class MeasurementEngine:
         return row
 
     def run_frequency_sweep(self, speed_name: str) -> RunResult:
+        self.apply_ac_accuracy_for_speed(speed_name)
         self.validate()
         level = SPEED_LEVELS[speed_name]
         output_dir = self.settings.output_dir
@@ -2356,7 +2346,11 @@ class MeasurementEngine:
 
             operating_smu = operating_row["smu_voltage_V"]
             session.set_smu_voltage_and_read_dc(operating_smu)
-            self.log(f"Stage 2: Impedance frequency sweep at SMU={operating_smu:.6g} V.")
+            self.log(
+                f"Stage 2: Impedance frequency sweep at SMU={operating_smu:.6g} V | "
+                f"{self.settings.ac_samples_per_frequency} AC samples per frequency | "
+                f"maximum impedance spread {self.settings.ac_max_impedance_spread_percent:g}%."
+            )
 
             negative_current_endpoint: Optional[NegativeCurrentEndpoint] = None
             for idx, f_ac in enumerate(freqs, start=1):
@@ -2696,7 +2690,10 @@ class PikaPVApp(tk.Tk):
             level = SPEED_LEVELS[name]
             ttk.Radiobutton(
                 speed_box,
-                text=f"{name} - {level.points_per_decade} pts/dec, min {level.minimum_frequency_points}, {level.repeats} avg",
+                text=(
+                    f"{name} - {level.points_per_decade} pts/dec, "
+                    f"{level.ac_samples_per_frequency} AC samples/freq"
+                ),
                 variable=self.speed_var,
                 value=name,
             ).pack(anchor="w")

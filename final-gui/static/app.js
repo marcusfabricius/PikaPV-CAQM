@@ -17,7 +17,7 @@ const modes = {
     title: "Complete AC measurement",
     examples: "C-V curves with a frequency range, plus impedance-related plots.",
     body: "Runs CV-style voltage points and frequency sweeps while preserving the backend filtering and outlier handling.",
-    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Cj", "C_parallel", "Rj", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
+    vars: ["frequency", "Z_real", "Z_imag", "Z_mag", "Phase_Z", "C", "Vac_pv", "Iac_pv", "Phase_Vac", "Phase_Iac", "Vdc_pv", "Idc_pv", "Pdc_pv"],
     plots: "C-V, C-f, impedance plots"
   },
   live_lockin: {
@@ -66,27 +66,40 @@ const customSpeedProfileKeys = new Set([
   "custom_frequency_sweep_settling_after_smu_s",
   "custom_frequency_sweep_settling_after_freq_s",
   "custom_frequency_sweep_lockin_time_constant_wait_s",
+  "custom_frequency_sweep_ac_samples_per_frequency",
+  "custom_frequency_sweep_ac_max_impedance_spread_percent",
+  "custom_frequency_sweep_ac_sample_interval_s",
   "custom_cv_vdc_pv_step_size_v",
   "custom_cv_frequency_points_per_decade",
   "custom_cv_minimum_frequency_points",
   "custom_cv_settling_after_smu_s",
   "custom_cv_settling_after_freq_s",
-  "custom_cv_lockin_time_constant_wait_s"
+  "custom_cv_lockin_time_constant_wait_s",
+  "custom_cv_ac_samples_per_frequency",
+  "custom_cv_ac_max_impedance_spread_percent",
+  "custom_cv_ac_sample_interval_s"
 ]);
 
 const advancedFieldLabels = {
+  auto_smu_range: "Automatic SMU range (always on)",
   custom_frequency_sweep_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
   custom_frequency_sweep_frequency_points_per_decade: "Frequency points per decade",
   custom_frequency_sweep_minimum_frequency_points: "Minimum frequency points",
   custom_frequency_sweep_settling_after_smu_s: "Settling SMU change time [s]",
   custom_frequency_sweep_settling_after_freq_s: "Settling FG change time [s]",
   custom_frequency_sweep_lockin_time_constant_wait_s: "Lockin Time wait [s]",
+  custom_frequency_sweep_ac_samples_per_frequency: "AC samples per frequency",
+  custom_frequency_sweep_ac_max_impedance_spread_percent: "Maximum AC impedance spread [%]",
+  custom_frequency_sweep_ac_sample_interval_s: "AC sample interval [s]",
   custom_cv_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
   custom_cv_frequency_points_per_decade: "Frequency points per decade",
   custom_cv_minimum_frequency_points: "Minimum frequency points",
   custom_cv_settling_after_smu_s: "Settling SMU change time [s]",
   custom_cv_settling_after_freq_s: "Settling FG change time [s]",
   custom_cv_lockin_time_constant_wait_s: "Lockin Time wait [s]",
+  custom_cv_ac_samples_per_frequency: "AC samples per frequency",
+  custom_cv_ac_max_impedance_spread_percent: "Maximum AC impedance spread [%]",
+  custom_cv_ac_sample_interval_s: "AC sample interval [s]",
   custom_vdc_pv_step_size_v: "Vdc_pv Step Size [V]",
   custom_frequency_points_per_decade: "Frequency points per decade",
   custom_minimum_frequency_points: "Minimum frequency points",
@@ -121,6 +134,7 @@ function persistAdvancedSettings() {
 
 const settings = { ...structuredClone(window.DEFAULT_SETTINGS), ...loadPersistedAdvancedSettings() };
 settings.test_speed = settings.test_speed || "Medium";
+settings.auto_smu_range = true;
 
 const variableOptionsByMode = {
   standard_dc: [
@@ -148,9 +162,6 @@ const variableOptionsByMode = {
     ["Z_mag", "Z_mag"],
     ["Phase_Z", "Phase_Z"],
     ["C", "C"],
-    ["Cj (equivalent-circuit fit)", "Cj"],
-    ["C_parallel (per-frequency)", "C_parallel"],
-    ["Rj (equivalent-circuit fit)", "Rj"],
     ["Vac_pv", "Vac_pv"],
     ["Iac_pv", "Iac_pv"],
     ["Phase_Vac", "Phase_Vac"],
@@ -178,10 +189,7 @@ const valueAliases = {
   Z_imag: ["Z_imag_ohm"],
   Z_mag: ["Z_magnitude_ohm", "Z_mag_ohm"],
   Phase_Z: ["Z_phase_deg"],
-  C: ["C_junction_fit_F", "C_final_median_F", "C_uncorrected_F", "capacitance"],
-  Cj: ["C_junction_fit_F"],
-  C_parallel: ["C_parallel_median_F", "C_uncorrected_F"],
-  Rj: ["R_junction_fit_ohm", "R_junction_ohm"],
+  C: ["C_final_median_F", "C_uncorrected_F", "capacitance"],
   Vac_pv: ["Vac_mag_corrected_V"],
   Iac_pv: ["Iac_mag_corrected_A"],
   Phase_Vac: ["Vac_phase_corrected_deg"],
@@ -194,12 +202,20 @@ const acFrequencyDependentVariables = new Set([
   "Z_mag",
   "Phase_Z",
   "C",
-  "C_parallel",
   "Vac_pv",
   "Iac_pv",
   "Phase_Vac",
   "Phase_Iac"
 ]);
+
+function isAcFrequencyDomainVariable(variable) {
+  return variable === "frequency" || acFrequencyDependentVariables.has(variable);
+}
+
+function customPlotNeedsTargetVdc(xVariable, yVariable, mode) {
+  if (mode !== "complete_ac" || selectedAcFrequencyMode === "single") return false;
+  return isAcFrequencyDomainVariable(xVariable) && isAcFrequencyDomainVariable(yVariable);
+}
 
 function $(id) { return document.getElementById(id); }
 
@@ -649,8 +665,8 @@ function buildAdvanced() {
   const sections = [
     ["Measurement speed mode", ["test_speed", "auto_smu_step_by_speed"]],
     ["LED settings", ["led_duty_cycle_percent"]],
-    ["Custom frequency sweep", ["custom_frequency_sweep_vdc_pv_step_size_v", "custom_frequency_sweep_frequency_points_per_decade", "custom_frequency_sweep_minimum_frequency_points", "custom_frequency_sweep_settling_after_smu_s", "custom_frequency_sweep_settling_after_freq_s", "custom_frequency_sweep_lockin_time_constant_wait_s"]],
-    ["Custom CV curve", ["custom_cv_vdc_pv_step_size_v", "custom_cv_frequency_points_per_decade", "custom_cv_minimum_frequency_points", "custom_cv_settling_after_smu_s", "custom_cv_settling_after_freq_s", "custom_cv_lockin_time_constant_wait_s"]],
+    ["Custom frequency sweep", ["custom_frequency_sweep_vdc_pv_step_size_v", "custom_frequency_sweep_frequency_points_per_decade", "custom_frequency_sweep_minimum_frequency_points", "custom_frequency_sweep_settling_after_smu_s", "custom_frequency_sweep_settling_after_freq_s", "custom_frequency_sweep_lockin_time_constant_wait_s", "custom_frequency_sweep_ac_samples_per_frequency", "custom_frequency_sweep_ac_max_impedance_spread_percent", "custom_frequency_sweep_ac_sample_interval_s"]],
+    ["Custom CV curve", ["custom_cv_vdc_pv_step_size_v", "custom_cv_frequency_points_per_decade", "custom_cv_minimum_frequency_points", "custom_cv_settling_after_smu_s", "custom_cv_settling_after_freq_s", "custom_cv_lockin_time_constant_wait_s", "custom_cv_ac_samples_per_frequency", "custom_cv_ac_max_impedance_spread_percent", "custom_cv_ac_sample_interval_s"]],
     ["SMU settings", ["auto_smu_range", "smu_start_v", "smu_stop_v", "smu_step_v", "cv_smu_step_v", "manual_smu_voltage_v", "target_vpv_v", "operating_point_mode"]],
     ["Measurement quality", ["dc_read_repeats", "dc_variation_warning_percent", "dc_vdc_variation_warning_floor_v", "dc_idc_variation_warning_floor_a"]],
     ["Safety limits", ["smu_current_limit_a", "max_smu_v", "max_vdc_pv_v", "stop_if_vdc_exceeds_max", "max_idc_abs_a", "stop_if_idc_abs_exceeds_max", "stop_if_idc_negative", "negative_idc_limit_a", "idc_adc1_to_ampere", "idc_measurement_sign", "min_iac_mag_a"]],
@@ -675,6 +691,7 @@ function buildAdvanced() {
     input.addEventListener("change", () => {
       syncLedDutyInputs(input);
       collectAdvanced();
+      syncHomepageControls();
       updateAutoSmuRangeFields();
       scheduleLedDutyUpdate(input, 0);
       scheduleCustomSpeedProfileSave(input, 0);
@@ -682,6 +699,7 @@ function buildAdvanced() {
     input.addEventListener("input", () => {
       syncLedDutyInputs(input);
       collectAdvanced();
+      syncHomepageControls();
       scheduleLedDutyUpdate(input, 250);
       scheduleCustomSpeedProfileSave(input, 500);
     });
@@ -770,7 +788,7 @@ function renderAdvancedField(key) {
     const displayValue = isGpibAddressKey(key) ? shortGpibAddress(value) : value;
     const inputType = isGpibAddressKey(key) ? "number" : type;
     const label = advancedFieldLabels[key] || key.replaceAll("_", " ");
-    const disabled = key === "simulation_mode";
+    const disabled = key === "simulation_mode" || key === "auto_smu_range";
     return `<label class="${disabled ? "disabled-field" : ""}">${label}<input data-advanced="${key}" type="${inputType}" value="${displayValue}" ${checked} ${disabled ? "disabled" : ""}></label>`;
 }
 
@@ -790,12 +808,7 @@ function collectAdvanced() {
 }
 
 function isAutoSmuRangeEnabled() {
-  const autoInput = document.querySelector('[data-advanced="auto_smu_range"]');
-  return autoInput ? autoInput.checked : Boolean(settings.auto_smu_range);
-}
-
-function updateCalibrateButtonVisibility() {
-  $("calibrateSmuButton").hidden = currentStatus.status === "running" || !isAutoSmuRangeEnabled();
+  return true;
 }
 
 function updateAutoSmuRangeFields() {
@@ -818,7 +831,55 @@ function updateAutoSmuRangeFields() {
     input.disabled = isAutoStep;
     input.closest("label")?.classList.toggle("disabled-field", isAutoStep);
   });
-  updateCalibrateButtonVisibility();
+}
+
+function syncHomepageControls() {
+  const speed = $("homeSpeedProfile");
+  if (speed && speed.value !== settings.test_speed) speed.value = settings.test_speed || "Medium";
+  const duty = Math.min(99, Math.max(1, Number(settings.led_duty_cycle_percent || 50)));
+  const range = $("homeLedDutyRange");
+  const number = $("homeLedDutyNumber");
+  if (range && Number(range.value) !== duty) range.value = duty;
+  if (number && Number(number.value) !== duty) number.value = duty;
+}
+
+function syncAdvancedControl(key) {
+  const inputs = document.querySelectorAll(`[data-advanced="${key}"]`);
+  inputs.forEach(input => {
+    if (input.type === "checkbox") input.checked = Boolean(settings[key]);
+    else input.value = settings[key];
+  });
+}
+
+function setupHomepageControls() {
+  const speed = $("homeSpeedProfile");
+  const range = $("homeLedDutyRange");
+  const number = $("homeLedDutyNumber");
+  syncHomepageControls();
+
+  speed?.addEventListener("change", () => {
+    settings.test_speed = speed.value;
+    syncAdvancedControl("test_speed");
+    persistAdvancedSettings();
+  });
+
+  [range, number].forEach(input => {
+    input?.addEventListener("input", () => {
+      const duty = Math.min(99, Math.max(1, Number(input.value || settings.led_duty_cycle_percent || 50)));
+      settings.led_duty_cycle_percent = duty;
+      syncLedDutyInputs(input);
+      persistAdvancedSettings();
+      scheduleLedDutyUpdate(input, 250);
+    });
+    input?.addEventListener("change", () => {
+      const duty = Math.min(99, Math.max(1, Number(input.value || settings.led_duty_cycle_percent || 50)));
+      settings.led_duty_cycle_percent = duty;
+      syncLedDutyInputs(input);
+      syncAdvancedControl("led_duty_cycle_percent");
+      persistAdvancedSettings();
+      scheduleLedDutyUpdate(input, 0);
+    });
+  });
 }
 
 function isGpibAddressKey(key) {
@@ -837,6 +898,7 @@ function expandGpibAddress(value) {
 }
 
 function collectPayload() {
+  settings.auto_smu_range = true;
   collectAdvanced();
   const payload = { mode: selectedMode, speed: settings.test_speed || "Medium", settings };
   const freq = {};
@@ -923,26 +985,6 @@ async function stopCurrentAndStartPending() {
   }
 }
 
-async function calibrateSmuRange() {
-  const payload = collectPayload();
-  const response = await fetch("/api/calibrate-smu", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (response.status === 409) {
-    pendingStartPayload = null;
-    openRunningModal();
-    return;
-  }
-  if (!data.ok) {
-    $("statusText").textContent = data.error || "Could not start SMU calibration.";
-    return;
-  }
-  startPolling();
-}
-
 async function applyLiveControl() {
   const payload = {};
   const smu = Number($("liveSmuVoltage").value);
@@ -979,14 +1021,6 @@ async function refreshStatus() {
   $("resumeButton").hidden = currentStatus.status !== "running" || currentStatus.mode === "smu_calibration";
   $("resumeRunningButton").hidden = currentStatus.mode === "smu_calibration";
   $("stopButton").hidden = currentStatus.status !== "running";
-  updateCalibrateButtonVisibility();
-  $("calibrateSmuButton").textContent = currentStatus.smu_calibration?.smu_start_v
-    ? "Recalibrate for solar cell"
-    : "Calibrate for solar cell";
-  if (currentStatus.smu_calibration?.smu_start_v) {
-    settings.smu_start_v = currentStatus.smu_calibration.smu_start_v;
-    settings.smu_stop_v = currentStatus.smu_calibration.smu_stop_v;
-  }
   if (currentStatus.status === "failed") {
     $("statusText").textContent = currentStatus.short_error || "Measurement failed.";
   }
@@ -1020,8 +1054,8 @@ function availableDefaults() {
     return defaults
       .filter(plot => plot.id !== "cf_at_vdc")
       .map(plot => {
-        if (plot.id === "cv") return { ...plot, label: "Parallel C-V (single frequency)" };
-        if (plot.id === "cv_per_area") return { ...plot, label: "Parallel C-V over Area (single frequency)" };
+        if (plot.id === "cv") return { ...plot, label: "C-V (single frequency)" };
+        if (plot.id === "cv_per_area") return { ...plot, label: "C-V over Area (single frequency)" };
         return plot;
       });
   }
@@ -1038,13 +1072,7 @@ function allVariableOptions() {
     options.push({ label, value });
   }
   const mode = variableOptionsByMode[selectedMode] ? selectedMode : (currentStatus.mode || selectedMode);
-  (variableOptionsByMode[mode] || [])
-    .filter(([, value]) => !(
-      mode === "complete_ac"
-      && selectedAcFrequencyMode === "single"
-      && ["Cj", "Rj"].includes(value)
-    ))
-    .forEach(([label, value]) => add(label, value));
+  (variableOptionsByMode[mode] || []).forEach(([label, value]) => add(label, value));
   if (!variableOptionsByMode[mode]) Object.values(vars).forEach(list => list.forEach(v => add(v, v)));
   if (!options.length && modes[mode]) modes[mode].vars.forEach(v => add(v, v));
   return options;
@@ -1061,11 +1089,14 @@ function updatePlotCardVisibility(card) {
   const defaultId = card.querySelector('[data-plot-field="default"]')?.value;
   const selectedDefault = availableDefaults().find(p => p.id === defaultId);
   const targetField = card.querySelector(".target-vdc-field");
+  const defaultTargetVdcInput = card.querySelector('[data-plot-field="targetVdc"]');
   const defaultAreaField = card.querySelector(".default-area-field");
   const defaultAreaInput = card.querySelector('[data-plot-field="defaultArea"]');
   const customPerArea = card.querySelector('[data-plot-field="perArea"]');
   const customAreaField = card.querySelector(".custom-area-field");
   const customAreaInput = card.querySelector('[data-plot-field="customArea"]');
+  const customTargetVdcField = card.querySelector(".custom-target-vdc-field");
+  const customTargetVdcInput = card.querySelector('[data-plot-field="customTargetVdc"]');
   const customTargetFrequencyField = card.querySelector(".custom-target-frequency-field");
   const customTargetFrequencyInput = card.querySelector('[data-plot-field="targetFrequency"]');
   const xVariable = card.querySelector('[data-plot-field="x"]')?.value;
@@ -1075,15 +1106,19 @@ function updatePlotCardVisibility(card) {
     && mode === "complete_ac"
     && selectedAcFrequencyMode !== "single"
     && (
-      (xVariable === "Vdc_pv" && acFrequencyDependentVariables.has(yVariable))
-      || (yVariable === "Vdc_pv" && acFrequencyDependentVariables.has(xVariable))
+      (xVariable === "Vdc_pv" && isAcFrequencyDomainVariable(yVariable))
+      || (yVariable === "Vdc_pv" && isAcFrequencyDomainVariable(xVariable))
     );
+  const needsTargetVdc = isCustom && customPlotNeedsTargetVdc(xVariable, yVariable, mode);
   if (targetField) targetField.hidden = isCustom || !selectedDefault?.needsTargetVdc;
   if (defaultAreaField) defaultAreaField.hidden = isCustom || !selectedDefault?.needsArea;
   if (customAreaField) customAreaField.hidden = !isCustom || !customPerArea?.checked;
+  if (customTargetVdcField) customTargetVdcField.hidden = !needsTargetVdc;
   if (customTargetFrequencyField) customTargetFrequencyField.hidden = !needsTargetFrequency;
+  if (defaultTargetVdcInput) defaultTargetVdcInput.required = !isCustom && Boolean(selectedDefault?.needsTargetVdc);
   if (defaultAreaInput) defaultAreaInput.required = !isCustom && Boolean(selectedDefault?.needsArea);
   if (customAreaInput) customAreaInput.required = isCustom && Boolean(customPerArea?.checked);
+  if (customTargetVdcInput) customTargetVdcInput.required = needsTargetVdc;
   if (customTargetFrequencyInput) customTargetFrequencyInput.required = needsTargetFrequency;
 }
 
@@ -1111,6 +1146,7 @@ function renderPlotConfig() {
         <label>Y-axis<select data-plot-field="y">${optionsHtml(vars)}</select></label>
         <label>X scale<select data-plot-field="xScale"><option>linear</option><option>log</option></select></label>
         <label>Y scale<select data-plot-field="yScale"><option>linear</option><option>log</option></select></label>
+        <label class="custom-target-vdc-field">Target Vdc_pv [V]<input data-plot-field="customTargetVdc" type="number" step="0.001" placeholder="closest measured"></label>
         <label class="custom-target-frequency-field">Target frequency [Hz]<input data-plot-field="targetFrequency" type="number" min="0.000000001" step="any" value="${settings.freq_start_hz}" placeholder="closest measured"></label>
         <label class="plot-option-check"><input data-plot-field="perArea" type="checkbox"> Normalize Y-axis by area</label>
         <label class="custom-area-field">Solar-cell area [cm&sup2;]<input data-plot-field="customArea" type="number" min="0.000000001" step="any" placeholder="enter active area"></label>
@@ -1146,6 +1182,10 @@ function readPlotConfigs() {
     const perArea = card.querySelector('[data-plot-field="perArea"]').checked;
     const areaInput = card.querySelector('[data-plot-field="customArea"]');
     const areaCm2 = areaInput?.value !== "" ? Number(areaInput.value) : undefined;
+    const targetVdcInput = card.querySelector('[data-plot-field="customTargetVdc"]');
+    const targetVdc = targetVdcInput?.required && targetVdcInput.value !== ""
+      ? Number(targetVdcInput.value)
+      : undefined;
     const targetFrequencyInput = card.querySelector('[data-plot-field="targetFrequency"]');
     const targetFrequency = targetFrequencyInput?.required && targetFrequencyInput.value !== ""
       ? Number(targetFrequencyInput.value)
@@ -1161,6 +1201,8 @@ function readPlotConfigs() {
       custom: true,
       perArea,
       areaCm2,
+      needsTargetVdc: Number.isFinite(targetVdc),
+      targetVdc,
       needsTargetFrequency: Number.isFinite(targetFrequency),
       targetFrequency
     };
@@ -1292,20 +1334,7 @@ function rowsForPlot(datasets, cfg) {
     rows = rowsAtClosestFrequencyPerVoltage(rows, cfg);
   }
   if (cfg.needsTargetVdc && Number.isFinite(cfg.targetVdc)) {
-    const candidates = rows
-      .map(row => ({
-        row,
-        v: Number(resolveValue(row, "Vdc_pv")),
-        group: row.sweep_index ?? row.smu_voltage_V ?? row.V_SMU ?? row.smu_voltage
-      }))
-      .filter(item => Number.isFinite(item.v));
-    if (candidates.length) {
-      const closest = candidates.reduce((best, item) => Math.abs(item.v - cfg.targetVdc) < Math.abs(best.v - cfg.targetVdc) ? item : best);
-      cfg.actualVdc = closest.v;
-      rows = candidates
-        .filter(item => item.group !== undefined ? String(item.group) === String(closest.group) : Math.abs(item.v - closest.v) <= 1e-9)
-        .map(item => item.row);
-    }
+    rows = rowsAtClosestVdcSweep(rows, cfg);
   }
   return rows;
 }
@@ -1315,6 +1344,32 @@ function medianNumber(values) {
   if (!sorted.length) return NaN;
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function rowsAtClosestVdcSweep(rows, cfg) {
+  const groups = new Map();
+  rows.forEach((row, index) => {
+    const vdc = Number(resolveValue(row, "Vdc_pv"));
+    if (!Number.isFinite(vdc)) return;
+    const groupValue = row.sweep_index ?? row.smu_voltage_V ?? row.V_SMU ?? row.SMU_V;
+    const key = groupValue !== undefined && groupValue !== "" ? String(groupValue) : String(index);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+
+  const candidates = [...groups.values()]
+    .map(groupRows => ({
+      rows: groupRows,
+      vdc: medianNumber(groupRows.map(row => Number(resolveValue(row, "Vdc_pv"))))
+    }))
+    .filter(candidate => Number.isFinite(candidate.vdc));
+  if (!candidates.length) return rows;
+
+  const closest = candidates.reduce((best, candidate) =>
+    Math.abs(candidate.vdc - cfg.targetVdc) < Math.abs(best.vdc - cfg.targetVdc) ? candidate : best
+  );
+  cfg.actualVdc = closest.vdc;
+  return closest.rows;
 }
 
 function rowsAtClosestFrequencyPerVoltage(rows, cfg) {
@@ -1940,6 +1995,7 @@ async function uploadCsv() {
 
 buildModes();
 buildAdvanced();
+setupHomepageControls();
 updateConditionalOptions();
 refreshStatus();
 
@@ -1953,7 +2009,6 @@ $("downloadAllPlots").addEventListener("click", downloadAllPlots);
 $("newRun").addEventListener("click", () => showScreen("screen1"));
 $("plotCount").addEventListener("change", renderPlotConfig);
 $("stopButton").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
-$("calibrateSmuButton").addEventListener("click", calibrateSmuRange);
 $("applyLiveControl").addEventListener("click", applyLiveControl);
 $("resumeButton").addEventListener("click", resumeRunningMeasurement);
 $("resumeRunningButton").addEventListener("click", () => {

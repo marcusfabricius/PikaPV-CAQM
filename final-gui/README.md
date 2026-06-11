@@ -62,9 +62,9 @@ The app expands these to `GPIB0::<number>::INSTR`.
 
 Important settings:
 
-- `auto_smu_range` - automatically calibrates SMU start/stop for the solar cell.
+- `auto_smu_range` - always enabled in the web GUI because every non-live measurement starts with an automatic SMU range calibration.
 - `auto_smu_step_by_speed` - automatically chooses SMU points from the measured `Vdc_pv` spacing when Automatic SMU range is enabled.
-- `smu_start_v`, `smu_stop_v` - manual search/sweep limits when automatic range is off, and the search envelope for calibration.
+- `smu_start_v`, `smu_stop_v` - the search envelope used by the automatic calibration.
 - `smu_step_v` - DC and MPP search step size used when automatic step size is off.
 - `cv_smu_step_v` - SMU voltage step size used for Complete AC / C-V when automatic step size is off.
 - `freq_start_hz`, `freq_stop_hz` - default AC frequency range.
@@ -77,7 +77,7 @@ Important settings:
 
 ## Automatic SMU Range Calibration
 
-When `auto_smu_range` is enabled, the GUI can calibrate the solar-cell SMU voltage range.
+Every Standard DC, Standard Frequency Sweep, and Complete AC measurement starts by calibrating the solar-cell SMU voltage range. Live Lock-In Data starts immediately without calibration.
 
 The calibration:
 
@@ -102,13 +102,13 @@ When active, the GUI greys out `smu_step_v` and `cv_smu_step_v`. Instead of step
 
 This is used for I-V/P-V voltage sweeps, MPP searches, and C-V voltage points. The search measurements between accepted points are used only to find the next SMU voltage; the saved curve points are the accepted roughly evenly spaced `Vdc_pv` points.
 
-After the first automatic sweep for a given speed and calibrated SMU range, the accepted SMU voltages are cached in memory and reused by later voltage-sweep measurements. Changing the speed or recalibrating the solar-cell range forces a fresh automatic step search.
+Accepted SMU voltages are cached during the current calibrated run and can be reused by later voltage-sweep stages within that run. The next non-live measurement recalibrates and clears the previous voltage-point cache.
 
 The bottom progress bar includes extra estimated time for this first uncached automatic SMU search, plus a small fixed overhead allowance for instrument commands, CSV writing, and UI/backend bookkeeping.
 
 During calibration, only Stop is shown. Resume is hidden because there is no useful plot-selection screen to resume into.
 
-If a first measurement is started while automatic range is enabled and no calibration exists yet, the app calibrates first and then continues with the selected measurement.
+After calibration completes, the selected measurement continues automatically.
 
 ## LED Modulation Generator
 
@@ -122,6 +122,8 @@ The GUI configures the Tektronix AFG3101 at `led_fg_addr` for LED modulation whe
 - Duty cycle from Advanced settings, `1-99%`
 
 The LED generator is configured once when `web_app.py` starts. The LED duty cycle can be changed in Advanced settings under `LED settings` using either the slider or textbox; changes are applied directly to the generator.
+
+The LED brightness slider and speed-profile selector are also available directly on Screen 1. Their values stay synchronized with Advanced settings.
 
 ## Measurements
 
@@ -162,7 +164,6 @@ Recorded variables:
 - `Z_mag`
 - `Phase_Z`
 - `C`
-- `Rj` endpoint estimate (`Z_real` at the lowest frequency minus `Z_real` at the highest frequency)
 - `Vac_pv`
 - `Iac_pv`
 - `Phase_Vac`
@@ -195,11 +196,15 @@ Frequency mode options:
 - Frequency range - uses `freq_start_hz` to `freq_stop_hz`.
 - Single frequency - uses one exact frequency.
 
-For a frequency range, PikaPV fits the complete spectrum to the solar-cell small-signal model `Rs + j*w*Ls + (Rj || Cj)` using complex nonlinear least squares. The default C-V result uses the fitted PN-junction capacitance `Cj`; fitted `Rj`, `Rs`, `Ls`, and fit-quality values are saved as well.
+PikaPV calculates capacitance directly from the measured complex impedance using `C = Im(1/Z) / w`. Detailed frequency rows save this value as `C_uncorrected_F`. For each C-V voltage point, the program rejects capacitance outliers across the measured frequencies and saves their filtered median as the final `C`. A single-frequency measurement uses the capacitance from that frequency.
 
-The detailed frequency rows retain `C_uncorrected_F = Im(1/Z) / w`. This is the total measured parallel capacitance at that individual frequency, not the fitted PN-junction capacitance. The old median across frequencies is retained as `C_parallel_median_F` for diagnostics and as a fallback when a full fit is impossible, such as a single-frequency measurement. Single-frequency result plots are therefore labeled as parallel C-V plots; their capacitance can decrease when series resistance or inductance dominates and should not be compared directly with fitted `Cj` from the paper.
+At each frequency, PikaPV takes the number of AC phasor samples configured by the selected speed profile. It calculates complex impedance for each sample, rejects samples outside the configured maximum spread around the median complex impedance, and saves the median accepted `Z_real` and `Z_imag`. If fewer than a majority of the requested samples are accepted, the frequency point is retried using the normal outlier-retry settings. The CSV records requested/accepted/rejected sample counts and measured spread.
+
+The speed-profile YAML contains separate AC sample count, spread tolerance, and sample interval settings for Frequency sweep and CV curve. Custom profile values can also be edited in Advanced settings and are saved back to the YAML.
 
 For custom plots of a frequency-dependent value over `Vdc_pv`, enter a target frequency. PikaPV selects the closest measured frequency for every voltage point and combines repeated readings at that frequency using their median.
+
+For custom frequency-domain plots such as `Z_mag`, `Z_real`, `Z_imag`, `Phase_Z`, or `C` over frequency, enter a target `Vdc_pv`. PikaPV selects the voltage sweep whose median measured `Vdc_pv` is closest to the requested voltage. This closest-voltage selection also applies to plots between two frequency-dependent values, such as a custom Nyquist plot.
 
 Recorded variables:
 
@@ -209,9 +214,6 @@ Recorded variables:
 - `Z_mag`
 - `Phase_Z`
 - `C`
-- `Cj`
-- `C_parallel`
-- `Rj`
 - `Vac_pv`
 - `Iac_pv`
 - `Phase_Vac`
@@ -287,7 +289,7 @@ The function generator output is left on after runs.
 
 The SMU output is also left on after runs. When the backend knows the SMU stop voltage, it sets the SMU to `smu_stop_v` before going idle so the solar-cell current is at the lowest expected point.
 
-If Automatic SMU range calibration is enabled and has completed, `smu_stop_v` is the calibrated stop voltage. Otherwise it is the value from Advanced settings / `default_settings.yaml`.
+For non-live measurements, `smu_stop_v` is the stop voltage found by the calibration performed at the start of that measurement.
 
 This behavior is intentional for the lab workflow. Check the instrument front panels before disconnecting or changing hardware.
 

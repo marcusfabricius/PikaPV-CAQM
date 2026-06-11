@@ -19,6 +19,7 @@ advanced_settings:
   simulation_mode: false
 
   # SMU and DC sweep
+  # Always enabled by the web GUI; every non-live measurement calibrates first.
   auto_smu_range: true
   smu_start_v: 5.0
   smu_stop_v: 15.0
