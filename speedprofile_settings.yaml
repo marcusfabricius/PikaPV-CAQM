@@ -1,88 +1,176 @@
-# Speed profile defaults for web measurements.
-# Custom is edited from the Advanced settings panel.
+# Speed profiles for measurement timing, point density, and AC averaging.
+# Custom, Fast, Medium, and Slow provide different measurement-speed choices.
 
+# Available speed profiles.
 speed_profiles:
+  # Configurable profile selected by test_speed = Custom.
   Custom:
+    # Values applied specifically to a Standard Frequency Sweep.
     Frequency sweep:
+      # Target spacing in measured Vdc_pv used by automatic SMU point searching.
       Vdc_pv Step Size: 0.025
+      # Number of logarithmic frequency samples requested for each frequency decade.
       Frequency points per decade: 8
+      # Lower bound on the total number of frequency samples in the selected range.
       Minimum frequency points: 8
+      # Delay after changing the SMU voltage before reading the operating point.
       Settling SMU change time: 1.0
+      # Delay after changing the AC function-generator frequency before reading lock-ins.
       Settling FG change time: 4.0
+      # Additional lock-in settling delay added after the function-generator delay.
       Lockin Time wait: 0.0
+      # Number of AC phasor samples collected and median-averaged at each frequency.
       AC samples per frequency: 3
+      # Maximum accepted complex-impedance sample spread around the median.
       Maximum AC impedance spread percent: 8.0
+      # Delay between consecutive AC phasor samples at one frequency.
       AC sample interval: 0.1
+    # Values applied specifically to a Complete AC/CV voltage sweep.
     CV curve:
+      # Target spacing in measured Vdc_pv used by automatic SMU point searching.
       Vdc_pv Step Size: 0.02
+      # Number of logarithmic frequency samples measured at every CV voltage point per decade.
       Frequency points per decade: 4
+      # Lower bound on frequency samples measured at every CV voltage point.
       Minimum frequency points: 8
+      # Delay after moving to each new CV SMU voltage.
       Settling SMU change time: 1.0
+      # Delay after changing frequency within each CV voltage-point sweep.
       Settling FG change time: 3.0
+      # Additional lock-in settling delay after each CV frequency change.
       Lockin Time wait: 0.0
+      # Number of AC phasor samples collected at each CV voltage/frequency combination.
       AC samples per frequency: 3
+      # Maximum accepted complex-impedance sample spread around the median.
       Maximum AC impedance spread percent: 8.0
+      # Delay between consecutive AC phasor samples at one CV frequency point.
       AC sample interval: 0.1
+
+  # Fast preset: prioritizes short measurement duration over point density and averaging.
   Fast:
+    # Fast-preset values applied specifically to a Standard Frequency Sweep.
     Frequency sweep:
+      # Target measured Vdc_pv spacing used if an MPP voltage sweep is required.
       Vdc_pv Step Size: 0.05
+      # Logarithmic frequency density for the Fast frequency sweep.
       Frequency points per decade: 4
+      # Minimum total frequency points for the Fast frequency sweep.
       Minimum frequency points: 6
+      # Fast-preset delay after an SMU voltage change.
       Settling SMU change time: 1.0
+      # Fast-preset delay after a function-generator frequency change.
       Settling FG change time: 2.6
+      # Additional lock-in settling delay for the Fast frequency sweep.
       Lockin Time wait: 0.0
+      # Fast mode takes one AC phasor sample per frequency without averaging.
       AC samples per frequency: 1
+      # Wider sample-spread tolerance used by the Fast profile.
       Maximum AC impedance spread percent: 15.0
+      # No delay between AC samples because Fast mode takes one sample.
       AC sample interval: 0.0
+    # Fast-preset values applied specifically to a Complete AC/CV voltage sweep.
     CV curve:
+      # Coarse target Vdc_pv spacing used to reduce the number of CV voltage points.
       Vdc_pv Step Size: 0.07
+      # Logarithmic frequency density measured at every Fast CV voltage point.
       Frequency points per decade: 3
+      # Minimum frequency points measured at every Fast CV voltage point.
       Minimum frequency points: 6
+      # Fast-preset delay after moving to a new CV SMU voltage.
       Settling SMU change time: 0.8
+      # Fast-preset delay after changing frequency within a CV sweep.
       Settling FG change time: 2.6
+      # Additional lock-in settling delay for Fast CV measurements.
       Lockin Time wait: 0.0
+      # Fast CV mode takes one AC phasor sample per frequency.
       AC samples per frequency: 1
+      # Wider sample-spread tolerance used by the Fast CV profile.
       Maximum AC impedance spread percent: 15.0
+      # No delay between AC samples because Fast CV mode takes one sample.
       AC sample interval: 0.0
+
+  # Medium preset: default balance between measurement duration and accuracy.
   Medium:
+    # Medium-preset values applied specifically to a Standard Frequency Sweep.
     Frequency sweep:
+      # Target measured Vdc_pv spacing used if an MPP voltage sweep is required.
       Vdc_pv Step Size: 0.025
+      # Logarithmic frequency density for the Medium frequency sweep.
       Frequency points per decade: 8
+      # Minimum total frequency points for the Medium frequency sweep.
       Minimum frequency points: 10
+      # Medium-preset delay after an SMU voltage change.
       Settling SMU change time: 1.0
+      # Medium-preset delay after a function-generator frequency change.
       Settling FG change time: 4.0
+      # Additional lock-in settling delay for the Medium frequency sweep.
       Lockin Time wait: 0.0
+      # Number of AC samples median-averaged at each Medium frequency point.
       AC samples per frequency: 3
+      # Accepted complex-impedance sample spread for Medium measurements.
       Maximum AC impedance spread percent: 8.0
+      # Delay between Medium-profile AC phasor samples.
       AC sample interval: 0.1
+    # Medium-preset values applied specifically to a Complete AC/CV voltage sweep.
     CV curve:
+      # Target measured Vdc_pv spacing used between Medium CV voltage points.
       Vdc_pv Step Size: 0.05
+      # Logarithmic frequency density measured at every Medium CV voltage point.
       Frequency points per decade: 3
+      # Minimum frequency points measured at every Medium CV voltage point.
       Minimum frequency points: 5
+      # Medium-preset delay after moving to a new CV SMU voltage.
       Settling SMU change time: 1.0
+      # Medium-preset delay after changing frequency within a CV sweep.
       Settling FG change time: 3.0
+      # Additional lock-in settling delay for Medium CV measurements.
       Lockin Time wait: 0.0
+      # Number of AC samples median-averaged at each Medium CV frequency point.
       AC samples per frequency: 3
+      # Accepted complex-impedance sample spread for Medium CV measurements.
       Maximum AC impedance spread percent: 8.0
+      # Delay between Medium CV AC phasor samples.
       AC sample interval: 0.1
+
+  # Slow preset: prioritizes frequency detail and AC averaging over duration.
   Slow:
+    # Slow-preset values applied specifically to a Standard Frequency Sweep.
     Frequency sweep:
+      # Fine target measured Vdc_pv spacing used if an MPP voltage sweep is required.
       Vdc_pv Step Size: 0.01
+      # High logarithmic frequency density for the Slow frequency sweep.
       Frequency points per decade: 16
+      # Minimum total frequency points for the Slow frequency sweep.
       Minimum frequency points: 16
+      # Slow-preset delay after an SMU voltage change.
       Settling SMU change time: 1.0
+      # Slow-preset delay after a function-generator frequency change.
       Settling FG change time: 5.6
+      # Additional lock-in settling delay for the Slow frequency sweep.
       Lockin Time wait: 0.0
+      # Number of AC samples median-averaged at each Slow frequency point.
       AC samples per frequency: 5
+      # Accepted complex-impedance sample spread for Slow measurements.
       Maximum AC impedance spread percent: 8.0
+      # Delay between Slow-profile AC phasor samples.
       AC sample interval: 0.2
+    # Slow-preset values applied specifically to a Complete AC/CV voltage sweep.
     CV curve:
+      # Fine target measured Vdc_pv spacing used between Slow CV voltage points.
       Vdc_pv Step Size: 0.035
+      # Logarithmic frequency density measured at every Slow CV voltage point.
       Frequency points per decade: 5
+      # Minimum frequency points measured at every Slow CV voltage point.
       Minimum frequency points: 8
+      # Slow-preset delay after moving to a new CV SMU voltage.
       Settling SMU change time: 1.0
+      # Slow-preset delay after changing frequency within a CV sweep.
       Settling FG change time: 4.0
+      # Additional lock-in settling delay for Slow CV measurements.
       Lockin Time wait: 0.0
+      # Number of AC samples median-averaged at each Slow CV frequency point.
       AC samples per frequency: 5
+      # Accepted complex-impedance sample spread for Slow CV measurements.
       Maximum AC impedance spread percent: 8.0
+      # Delay between Slow CV AC phasor samples.
       AC sample interval: 0.2
