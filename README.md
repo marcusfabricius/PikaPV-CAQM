@@ -1,423 +1,336 @@
-# MeasureApp
+# PikaPV Web GUI
 
-MeasureApp is a local measurement application for a solar-cell impedance and capacitance setup. The measurement backend still comes from the original Tkinter program, but the primary interface is now a clean local Flask web app that runs on the measurement computer and opens in a browser.
+Local browser GUI for solar-cell DC, impedance, C-V, and live lock-in measurements.
 
-The web application entry point is `web_app.py`. The legacy Tkinter file `gui-v1.py` is kept as the measurement backend source of truth.
+The app is a Flask web interface whose runtime files now live under `src/`, with the measurement backend in `src/pikapv-backend.py`. It is intended to run on the measurement PC connected to the instruments over VISA/GPIB.
 
-## What It Measures
+## Files
 
-MeasureApp can acquire and plot:
+Required files for the GUI:
 
-- IV curve
-- PV curve
-- CV curve
-- Impedance frequency plots
-- Z' versus frequency
-- Z'' versus frequency
-- |Z| versus frequency
-- Phase versus frequency
-- Nyquist plot
-- Capacitance versus frequency
-- A-B differential lock-in live monitor
+- `src/web_app.py` - starts the local Flask web server and API.
+- `src/pikapv-backend.py` - measurement backend and instrument control.
+- `default_settings.yaml` - editable default values for Advanced settings.
+- `src/templates/index.html` - browser UI.
+- `src/static/app.js` - UI logic, plotting, live view, polling, upload/download.
+- `src/static/app.css` - UI styling.
+- `src/requirements.txt` - Python dependencies.
+- `measurement_output/` - generated CSV files.
 
-The GUI also supports custom plotting after a run. Select a dataset, choose numeric X and Y columns, and choose linear or logarithmic axes.
+## Start
 
-## Hardware
+### Run using the launcher script (recommended)
 
-The code controls instruments through PyVISA/GPIB. Default addresses are:
+Use the launcher script for your OS:
 
-| Instrument | Default address | Purpose |
-| --- | --- | --- |
-| DMM | `GPIB0::10::INSTR` | Measures DC PV voltage, `Vdc_pv` |
-| Lock-in current amplifier | `GPIB0::15::INSTR` | Measures AC current and DC current through `ADC1` |
-| Lock-in voltage amplifier | `GPIB0::12::INSTR` | Measures AC voltage with A-B differential input |
-| Function generator | `GPIB0::14::INSTR` | Provides small AC perturbation |
-| SMU | `GPIB0::26::INSTR` | Sets the DC operating point |
+- Windows: `Windows_start_web_gui.bat`
+- macOS: `MacOS_start_web_gui.command`
+- Linux: `Linux_start_web_gui.sh`
 
-Do not change these addresses unless the lab setup has changed.
+### Manual start via terminal
 
-## Requirements
-
-Install Python packages:
+If you prefer to start the app directly from a terminal:
 
 ```powershell
-python -m pip install -r requirements.txt
+cd final-gui
+python start_web_gui.py
 ```
 
-Tkinter is still imported by the legacy backend file. It is included with most standard Python installations on Windows.
-
-For real measurements, the measurement PC must also have a working VISA backend and the correct GPIB drivers installed. Use simulation mode if the instruments are not connected.
-
-## Running
-
-From this directory, run the local web app:
-
-```powershell
-python web_app.py
-```
-
-Open the browser at:
+It should automatically open:
 
 ```text
 http://127.0.0.1:5000
 ```
 
-Detailed measurement logs, debug output, instrument messages, and tracebacks are printed in the terminal. The webpage only shows short status and error messages.
+The terminal running `start_web_gui.py` shows measurement progress, current frequency/voltage points, capacitance values, safety stops, output file paths, and errors.
 
-Before using real hardware, check:
+## Configuration
+ 
+Edit `default_settings.yaml` to change startup defaults. Restart `python web_app.py` after editing it.
 
-- GPIB addresses
-- SMU voltage range and current limit
-- DC current scaling from lock-in `ADC1`
-- DC current sign, `+1` or `-1`
-- AC perturbation amplitude
-- Lock-in command compatibility
-- Safety limits
+GPIB addresses can be written as only the number:
 
-## Main Files
+```yaml
+dmm_addr: 10
+lockin_i_addr: 15
+lockin_v_addr: 12
+fg_addr: 14
+led_fg_addr: 11
+smu_addr: 26
+```
 
-| File | Purpose |
-| --- | --- |
-| `web_app.py` | Flask web server, API endpoints, background measurement thread, CSV upload/download |
-| `templates/index.html` | Three-screen browser interface |
-| `static/app.css` | Modern local web UI styling |
-| `static/app.js` | Screen flow, modals, API polling, CSV upload, canvas plotting |
-| `requirements.txt` | Python dependencies for the local web app |
-| `gui-v1.py` | Legacy Tkinter application and reused measurement backend |
-| `main-iv-pv-curve.py` | Earlier standalone IV/PV sweep script |
-| `main-cv-pv-curve.py` | Earlier standalone CV sweep script |
-| `frequency-plots.py` | Earlier standalone impedance/frequency sweep script |
-| `A-B differential.py` | Earlier standalone A-B differential monitor |
-| `A-B differential-beta.py` | Earlier A-B monitor with impedance/capacitance calculations |
-| `gpib-searcher.py` | Prints available VISA resources |
-| `main-keithley-smu.py`, `main-multimeter-keithley2000.py`, `main-sr.py`, `main.py`, `set duty cycle LED.py`, `tmp.py` | Small instrument test or development scripts |
-| `measurement_output/` | Default output folder for the GUI |
-| `Data/`, `Hello World DATA/` | Existing measurement data and generated plots |
+The app expands these to `GPIB0::<number>::INSTR`.
 
-## Architecture
+Important settings:
 
-`gui-v1.py` is organized around four main backend classes that the web app reuses:
+- `auto_smu_range` - always enabled in the web GUI because every non-live measurement starts with an automatic SMU range calibration.
+- `auto_smu_step_by_speed` - automatically chooses SMU points from the measured `Vdc_pv` spacing when Automatic SMU range is enabled.
+- `smu_start_v`, `smu_stop_v` - the search envelope used by the automatic calibration.
+- `smu_step_v` - DC and MPP search step size used when automatic step size is off.
+- `cv_smu_step_v` - SMU voltage step size used for Complete AC / C-V when automatic step size is off.
+- `freq_start_hz`, `freq_stop_hz` - default AC frequency range.
+- `vac_vpp`, `fg_offset_v`, `fg_waveform` - function generator settings.
+- `led_duty_cycle_percent` - Tektronix AFG3101 LED modulation duty cycle, clamped to `1-99%`.
+- `settling_after_smu_s`, `settling_after_freq_s`, `lockin_time_constant_wait_s` - timing settings.
+- `max_smu_v`, `smu_current_limit_a`, `max_idc_abs_a`, `max_vdc_pv_v` - safety limits.
+- `idc_adc1_to_ampere`, `idc_measurement_sign` - conversion/sign for ADC1 current.
+- `simulation_mode` - use fake instruments for UI/backend testing without lab hardware.
 
-### `Settings`
+## Automatic SMU Range Calibration
 
-Stores user-configurable settings from the GUI:
+Every Standard DC, Standard Frequency Sweep, and Complete AC measurement starts by calibrating the solar-cell SMU voltage range. Live Lock-In Data starts immediately without calibration.
 
-- VISA/GPIB addresses
-- SMU sweep limits
-- voltage and current safety limits
-- function generator settings
-- frequency range
-- lock-in commands
-- CV/frequency speed settings
-- outlier handling
-- plotting units
-- simulation mode
+The calibration:
 
-### `VisaController`
+1. Starts inside the configured `smu_start_v` to `smu_stop_v` envelope.
+2. Uses a coarse scan to find where `Vdc_pv` first becomes positive.
+3. Uses a coarse scan to find where `Idc_pv` becomes negative.
+4. Refines those boundaries down to about `0.005 V`.
+5. Verifies the detected start and stop points.
+6. Stores only the calibrated `smu_start_v` and `smu_stop_v`.
 
-Handles direct instrument communication:
+The calibration precision is only for finding the range. It does not overwrite `smu_step_v` or `cv_smu_step_v`.
 
-- opens and closes VISA resources
-- configures the DMM, SMU, function generator, and lock-ins
-- reads DC values
-- reads AC phasors
-- applies DC safety checks
-- shuts down outputs at the end of a run when configured
+## Automatic SMU Step Size
 
-### `MeasurementEngine`
+`auto_smu_step_by_speed` is enabled by default and only becomes active when `auto_smu_range` is also enabled.
 
-Contains measurement logic:
+When active, the GUI greys out `smu_step_v` and `cv_smu_step_v`. Instead of stepping the SMU by a fixed voltage, the backend searches for the next SMU voltage that makes `Vdc_pv` increase by the target amount for the selected speed:
 
-- `run_pre_scan()`
-- `run_iv_pv()`
-- `run_cv()`
-- `run_frequency_sweep()`
-- `run_ab_monitor()`
-- `measure_impedance_point()`
-- `filter_capacitance_rows()`
-- `dc_voltage_sweep_find_mpp()`
+- Fast: `0.05 Vdc_pv`
+- Medium: `0.025 Vdc_pv`
+- Slow: `0.01 Vdc_pv`
 
-### `MeasureApp`
+This is used for I-V/P-V voltage sweeps, MPP searches, and C-V voltage points. The search measurements between accepted points are used only to find the next SMU voltage; the saved curve points are the accepted roughly evenly spaced `Vdc_pv` points.
 
-Builds and runs the Tkinter GUI:
+Accepted SMU voltages are cached during the current calibrated run and can be reused by later voltage-sweep stages within that run. The next non-live measurement recalibrates and clears the previous voltage-point cache.
 
-- collects settings from input fields
-- starts measurements in a background thread
-- handles the Stop button
-- updates the log window
-- stores datasets from completed runs
-- plots built-in and custom plots with embedded Matplotlib
+The bottom progress bar includes extra estimated time for this first uncached automatic SMU search, plus a small fixed overhead allowance for instrument commands, CSV writing, and UI/backend bookkeeping.
 
-### `web_app.py`
+During calibration, only Stop is shown. Resume is hidden because there is no useful plot-selection screen to resume into.
 
-Adds the local web layer:
+After calibration completes, the selected measurement continues automatically.
 
-- `/` serves the browser UI
-- `/api/start` starts the selected measurement in a background thread
-- `/api/status` reports `idle`, `running`, `completed`, `failed`, or `stopped`
-- `/api/stop` requests a safe stop through the backend stop event
-- `/api/results` returns measured/uploaded data for plotting
-- `/api/upload` loads an existing CSV for plotting
-- `/download/combined` downloads the main combined CSV for the latest run
+## LED Modulation Generator
 
-The web layer does not implement new instrument physics. It calls `MeasurementEngine.run_selected()` and preserves the existing `VisaController` configuration and safety checks.
+The GUI configures the Tektronix AFG3101 at `led_fg_addr` for LED modulation whenever a measurement session starts:
 
-Keep these responsibilities separate when changing the code. Measurement logic should stay in `MeasurementEngine`, instrument communication should stay in `VisaController`, and GUI callbacks should only collect settings, start or stop workers, display logs, and plot data.
+- Pulse waveform
+- Frequency `1 MHz`
+- Amplitude `5 Vpp`
+- Offset `2.5 V`
+- Output on
+- Duty cycle from Advanced settings, `1-99%`
 
-## Measurement Flows
+The LED generator is configured once when `web_app.py` starts. The LED duty cycle can be changed in Advanced settings under `LED settings` using either the slider or textbox; changes are applied directly to the generator.
 
-### 1. Pre-Measure Scan
+The LED brightness slider and speed-profile selector are also available directly on Screen 1. Their values stay synchronized with Advanced settings.
 
-The pre-scan is a fast SMU voltage sweep. It records `Vdc_pv`, `Idc_pv`, and power, then estimates:
+## Measurements
 
-- the first positive `Vdc_pv` point
-- the expected CV voltage range
-- the number of CV voltage points
-- estimated duration for Fast, Medium, and Slow CV modes
+### Standard DC Measurement
 
-Output:
+Runs a DC sweep from `smu_start_v` to `smu_stop_v`. With automatic SMU step size on, points are spaced by `Vdc_pv`; otherwise the sweep uses `smu_step_v`.
 
-- `pre_scan_*.csv`
+Recorded variables:
 
-### 2. IV/PV Sweep
+- `Vdc_pv`
+- `Idc_pv`
+- `Pdc_pv`
+- `V_SMU`
 
-The SMU voltage is swept from start to stop. At each point:
+Default result plots:
 
-- the DMM reads `Vdc_pv`
-- lock-in `ADC1` reads DC current
-- the app calculates `Pdc_pv_W = Vdc_pv * Idc_pv`
+- I-V
+- P-V
 
-The sweep stops when:
+The I-V and P-V plots are shown in the positive quadrant only: `0+ V` and `0+ A/W`.
 
-- target `Vpv` is reached
-- `Idc_pv` becomes negative, if enabled
-- a configured safety limit is hit
-- the user presses Stop
+After the sweep, the backend finds the maximum power point from the measured DC data and saves it in the results. When the run exits, the SMU is left on at `smu_stop_v`.
 
-Output:
+### Standard Frequency Sweep
+
+Measures impedance over a log-spaced frequency range.
+
+Operating point options:
+
+- MPP search - first does a DC sweep, selects the maximum power point, then runs the frequency sweep there. With automatic SMU step size on, the MPP sweep is spaced by `Vdc_pv`; otherwise it uses `smu_step_v`.
+- Manual SMU voltage - uses `manual_smu_voltage_v` directly.
+
+Recorded variables:
+
+- `frequency`
+- `Z_real`
+- `Z_imag`
+- `Z_mag`
+- `Phase_Z`
+- `C`
+- `Vac_pv`
+- `Iac_pv`
+- `Phase_Vac`
+- `Phase_Iac`
+
+The final DC operating point is also saved and shown:
+
+- `Vdc_pv`
+- `Idc_pv`
+- `Pdc_pv`
+- `V_SMU`
+
+Default result plots:
+
+- Z_real over frequency
+- Z_imag over frequency
+- Z_mag over frequency
+- Phase_Z over frequency
+
+The terminal also prints capacitance for each frequency point.
+
+### Complete AC Measurement
+
+Runs a C-V style measurement. For each SMU voltage point, it measures one or more AC frequencies and calculates the complex impedance.
+
+With automatic SMU step size on, voltage points are spaced by `Vdc_pv`. Otherwise voltage points use `cv_smu_step_v`.
+
+Frequency mode options:
+
+- Frequency range - uses `freq_start_hz` to `freq_stop_hz`.
+- Single frequency - uses one exact frequency.
+
+PikaPV calculates capacitance directly from the measured complex impedance using `C = Im(1/Z) / w`. Detailed frequency rows save this value as `C_uncorrected_F`. For each C-V voltage point, the program rejects capacitance outliers across the measured frequencies and saves their filtered median as the final `C`. A single-frequency measurement uses the capacitance from that frequency.
+
+At each frequency, PikaPV takes the number of AC phasor samples configured by the selected speed profile. It calculates complex impedance for each sample, rejects samples outside the configured maximum spread around the median complex impedance, and saves the median accepted `Z_real` and `Z_imag`. If fewer than a majority of the requested samples are accepted, the frequency point is retried using the normal outlier-retry settings. The CSV records requested/accepted/rejected sample counts and measured spread.
+
+The speed-profile YAML contains separate AC sample count, spread tolerance, and sample interval settings for Frequency sweep and CV curve. Custom profile values can also be edited in Advanced settings and are saved back to the YAML.
+
+For custom plots of a frequency-dependent value over `Vdc_pv`, enter a target frequency. PikaPV selects the closest measured frequency for every voltage point and combines repeated readings at that frequency using their median.
+
+For custom frequency-domain plots such as `Z_mag`, `Z_real`, `Z_imag`, `Phase_Z`, or `C` over frequency, enter a target `Vdc_pv`. PikaPV selects the voltage sweep whose median measured `Vdc_pv` is closest to the requested voltage. This closest-voltage selection also applies to plots between two frequency-dependent values, such as a custom Nyquist plot.
+
+Recorded variables:
+
+- `frequency`
+- `Z_real`
+- `Z_imag`
+- `Z_mag`
+- `Phase_Z`
+- `C`
+- `Vac_pv`
+- `Iac_pv`
+- `Phase_Vac`
+- `Phase_Iac`
+- `Vdc_pv`
+- `Idc_pv`
+- `Pdc_pv`
+
+Default result plot:
+
+- C-V
+
+There is also a default option for C over frequency at a selected `Vdc_pv`. Because the exact requested voltage may not exist in the data, the GUI uses the closest measured `Vdc_pv`.
+
+### Live Lock-In Data
+
+Streams live values from lock-in 12 and lock-in 15.
+
+Shown values:
+
+- `Vpv_dc`
+- `Vpv_ac`
+- `Vpv phase`
+- `Ipv_ac`
+- `Ipv phase`
+
+Live controls:
+
+- SMU voltage
+- Function generator frequency
+
+Changing either field and pressing Enter applies the change without closing the live popup.
+
+Live plots:
+
+- Vpv_ac and Ipv_ac over time
+- Vpv phase and Ipv phase over time
+
+Very small values are shown in scientific notation.
+
+## Output Files
+
+CSV files are written to `measurement_output/` by default.
+
+Common output files:
 
 - `iv_pv_sweep_*.csv`
-
-### 3. CV Sweep
-
-The app first finds the first positive `Vdc_pv` point, or uses the last pre-scan result. It then steps through SMU voltages. At each voltage:
-
-- it performs a frequency sweep
-- reads AC voltage/current magnitude and phase
-- calculates impedance, admittance, and capacitance
-- filters bad capacitance points
-- stores one final capacitance value per voltage
-
-Outputs:
-
-- `cv_frequency_sweeps_*.csv`
-- `cv_curve_*.csv`
-- `cv_rejected_impedance_outliers_*.csv`, when outliers are recorded
-
-### 4. Frequency Sweep
-
-Frequency sweep has two operating point modes:
-
-- `MPP_SEARCH`: first performs a DC sweep and selects the maximum power point
-- `MANUAL_SMU_VOLTAGE`: directly uses the configured manual SMU voltage
-
-Then it performs an impedance frequency sweep at that operating point.
-
-Outputs:
-
 - `frequency_dc_operating_point_*.csv`
 - `frequency_impedance_sweep_*.csv`
-- `frequency_rejected_impedance_outliers_*.csv`, when outliers are recorded
-
-### 5. A-B Differential Monitor
-
-The monitor continuously reads `X.` and `PHA.` from both lock-ins until Stop is pressed.
-
-Lock-in 12 is corrected because the raw A-B signal gives `Vpv- - Vpv+`; the code flips the sign and shifts phase by 180 degrees.
-
-Output:
-
+- `frequency_rejected_impedance_outliers_*.csv`
+- `cv_curve_*.csv`
+- `cv_frequency_sweeps_*.csv`
+- `cv_rejected_impedance_outliers_*.csv`
 - `ab_differential_live_*.csv`
+- `smu_range_calibration_*.csv`
+- `combined_<mode>_*.csv`
 
-## Speed Levels
+Use Download combined CSV on the results screen to download the combined dataset for the latest run.
 
-The GUI has three speed modes:
+CSV files can also be imported through Advanced settings. The GUI tries to detect the correct measurement mode and loads the matching default plots.
 
-| Mode | Points per decade | Repeats | Behavior |
-| --- | ---: | ---: | --- |
-| Fast | 2 | 1 | Fewer points and shorter settling |
-| Medium | 4 | 2 | Balanced default-style mode |
-| Slow | 8 | 4 | More points, more repeats, longer settling |
+## Stop, Resume, and Running Measurements
 
-These mainly affect CV and frequency sweeps.
+Stop requests a safe stop. The backend finishes the current safe operation, leaves outputs in the intended lab state, and closes instrument connections.
 
-## Calculations
+If the browser page is closed while a measurement is running, reopen the GUI and press Resume to return to the active measurement screen.
 
-Impedance is calculated from:
+If another measurement is started while one is already running, the GUI shows an in-page popup with options to keep the current run or stop it and start the new one.
 
-- AC voltage magnitude
-- AC voltage phase
-- AC current magnitude
-- AC current phase
+## Intentional Output Behavior
 
-The app calculates:
+The function generator output is left on after runs.
 
-- `Z_magnitude_ohm`
-- `Z_phase_deg`
-- `Z_real_ohm`, Z'
-- `Z_imag_ohm`, Z''
-- admittance `Y = 1 / Z`
-- `Y_real_S`
-- `Y_imag_S`
-- capacitance from `Im(Y) / (2 * pi * f)`
+The SMU output is also left on after runs. When the backend knows the SMU stop voltage, it sets the SMU to `smu_stop_v` before going idle so the solar-cell current is at the lowest expected point.
 
-Capacitance values are stored internally in farads. The GUI can display capacitance in F, mF, uF, or nF.
+For non-live measurements, `smu_stop_v` is the stop voltage found by the calibration performed at the start of that measurement.
 
-## Outlier Handling
-
-The app can re-measure obvious impedance outliers where `abs(Z_real_ohm)` exceeds the configured threshold.
-
-Important GUI settings:
-
-- `Remeasure Z' outliers`
-- `Max |Z'| before retry [ohm]`
-- `Outlier retries`
-- `Abort if Z' retries fail`
-
-Current behavior:
-
-- If retries eventually produce an acceptable point, the accepted point is stored.
-- If retries fail and abort is disabled, the last measured point is kept, marked with `accepted_after_outlier_retries_exhausted`, and given a `measurement_warning`.
-- If retries fail and abort is enabled, the run stops.
-
-This prevents a single suspicious high `Z'` point from killing the whole GUI run by default.
+This behavior is intentional for the lab workflow. Check the instrument front panels before disconnecting or changing hardware.
 
 ## Safety Behavior
 
-The app checks:
+The backend checks:
 
-- maximum SMU voltage
-- maximum absolute DC current
-- optional negative DC current stop condition
-- optional maximum `Vdc_pv` stop condition
-- minimum AC current magnitude
-- Stop button state
+- SMU voltage against `max_smu_v`.
+- Absolute DC current against `max_idc_abs_a`.
+- Optional PV voltage limit against `max_vdc_pv_v`.
+- Optional negative-current stop against `negative_idc_limit_a`.
+- Minimum AC current magnitude against `min_iac_mag_a`.
 
-Important current settings:
+If a safety limit is hit, the measurement stops and the terminal prints the reason.
 
-- `Max |Idc| safety [A]`, default `10 A`
-- `Idc ADC1 to ampere`
-- `Idc sign (+1 or -1)`
-- `Stop when |Idc| exceeds max`
+## Troubleshooting
 
-A previous failure happened because `abs(Idc_pv)` was about `4.416 A` while an older hardcoded limit was `2.5 A`. The limit is now configurable in the GUI.
+No instruments found:
 
-## Simulation Mode
+- Check VISA installation.
+- Check GPIB cable/controller.
+- Check addresses in `default_settings.yaml`.
 
-`gui-v1.py` includes `FakeInstrument` and `FakeResourceManager`.
+Wrong current sign:
 
-Enable `simulation mode` in Advanced settings to test:
+- Adjust `idc_measurement_sign`.
+- Check `idc_adc1_cmd` and `idc_adc1_to_ampere`.
 
-- web layout
-- logging
-- measurement flow
-- output CSV generation
-- plotting
+Automatic calibration cannot find boundaries:
 
-Simulation mode does not control real hardware.
+- Make sure `smu_start_v` and `smu_stop_v` cover the expected solar-cell range.
+- Check DMM voltage polarity and ADC1 current sign.
+- Check `vdc_positive_threshold_v` and `negative_idc_limit_a`.
 
-## End-Of-Run Instrument State
+Plots show no compatible data:
 
-The current lab workflow intentionally leaves outputs on after a run:
+- Confirm the selected plot variables exist in the loaded CSV.
+- For uploaded CSVs, use files created by this GUI when possible.
+- For C over frequency at `Vdc_pv`, enter a target voltage that is inside the measured range.
 
-- The function generator is configured and left `OUTP ON`.
-- The SMU is left output-on.
-- IV/PV runs set the SMU back to the measured maximum power point voltage before cleanup.
-- Frequency-sweep runs set the SMU back to the selected operating point. In MPP-search mode, that is the measured MPP voltage; in manual mode, it is the manual operating voltage.
+The terminal is too noisy:
 
-This is intentional so the device remains biased after the program releases the VISA resources. Use the instrument front panels or a deliberate shutdown script if you need to turn outputs off.
-
-## Output Data
-
-The default GUI output directory is:
-
-```text
-measurement_output/
-```
-
-Output filenames include timestamps, for example:
-
-```text
-iv_pv_sweep_20260601_170702.csv
-frequency_impedance_sweep_20260601_170702.csv
-combined_standard_dc_20260602_114919.csv
-```
-
-The web app saves one main combined CSV per completed run and keeps the detailed backend CSV files where the existing measurement engine creates them. Uploaded CSV files are parsed and made available on the plotting screen without starting a new measurement.
-
-## Web App Assumptions
-
-- The existing `gui-v1.py` backend remains the trusted source for instrument communication, measurement calculations, simulation, outlier handling, and safety checks.
-- Complete AC single-frequency mode is routed through the existing CV frequency-sweep engine using a very narrow frequency range, because the current capacitance filter expects at least two frequency candidates.
-- Browser plots are drawn with local JavaScript canvas code, so no external plotting CDN is required.
-- Full logs and tracebacks stay in the terminal by design.
-
-## Real Hardware Verification
-
-Before real measurements, verify on the measurement PC:
-
-- Flask app can see the same VISA backend and GPIB resources as the old Tkinter GUI.
-- DMM, SMU, function generator, and both lock-ins configure correctly from each selected measurement mode.
-- Stop/cancel leaves SMU and function generator outputs in the expected safe state.
-- Current sign and ADC1-to-ampere scaling are correct.
-- Function generator `VOLT` units match the intended AC perturbation.
-- Uploaded combined CSV files contain the columns needed for the plots you expect.
-
-## Instrument Command Notes
-
-The lock-in and function generator commands may be model-specific. Current commands include:
-
-- `MAG.`
-- `PHA.`
-- `ADC. 1`
-- `X.`
-- `SEN 21`
-- `IMODE 0`
-- `VMODE 3`
-- `VMODE 1`
-- `IE 1`
-
-Function generator command `VOLT 0.010` is intended as a 10 mVpp perturbation, but this should be checked on the actual generator.
-
-## Important Lab Cautions
-
-- Do not assume `ADC1` current scaling is correct; it depends on the current probe.
-- Do not assume current sign is correct; it may need `+1` or `-1`.
-- Do not blindly lower the current safety limit if the setup normally measures several amps.
-- Do not change GPIB addresses unless the lab setup changed.
-- Do not assume lock-in commands work on every model.
-- Confirm whether the function generator interprets `VOLT` as Vpp, Vrms, or another amplitude convention.
-- The code has been syntax-checked during development, but still needs full validation on the real hardware.
-
-## Development Guidelines
-
-When fixing or extending the app:
-
-- Keep settings in the `Settings` dataclass.
-- Keep calculations and helper functions near the top of `gui-v1.py`.
-- Keep direct instrument communication inside `VisaController`.
-- Keep measurement procedures inside `MeasurementEngine`.
-- Keep GUI callbacks inside `MeasureApp` focused on settings, threading, logs, and plots.
-- Avoid adding measurement logic directly inside GUI callbacks.
-- Preserve simulation mode when changing measurement logic.
-- Be conservative with safety-related defaults.
-
-## Quick Hardware Discovery
-
-To list VISA resources:
-
-```powershell
-python gpib-searcher.py
-```
-
-Use the result to confirm the expected GPIB instruments are visible before running a real measurement.
+- Normal `/api/status` polling logs are suppressed. Measurement progress logs are kept.

@@ -92,6 +92,28 @@ p, label { color: var(--muted); }
 .mode-card strong { display: block; font-size: 18px; margin-bottom: 10px; }
 .mode-card small { color: var(--muted); line-height: 1.45; }
 
+.home-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, .55fr) minmax(340px, 1.45fr);
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.home-controls label {
+  display: grid;
+  gap: 6px;
+}
+.home-led-duty .range-pair {
+  grid-template-columns: minmax(180px, 1fr) 110px;
+}
+
+#screen1 > .actions {
+  margin-top: 24px;
+}
+
 .icon {
   border: 1px solid var(--line);
   background: #fff;
@@ -166,6 +188,17 @@ select, input {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+.plot-card .plot-option-check {
+  display: flex;
+  align-items: center;
+  align-self: end;
+  gap: 8px;
+  min-height: 38px;
+}
+.plot-card .plot-option-check input {
+  min-width: 0;
+  margin: 0;
 }
 
 .wait {
@@ -472,6 +505,7 @@ dialog form { padding: 20px; }
 
 @media (max-width: 900px) {
   .mode-grid, .plots, .plot-configs { grid-template-columns: 1fr; }
+  .home-controls { grid-template-columns: 1fr; }
   .conditional, .advanced-section-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-controls { grid-template-columns: 1fr; }
   .live-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
