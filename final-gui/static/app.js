@@ -1465,7 +1465,7 @@ function validPlotArea(cfg) {
 }
 
 function numericPairs(rows, cfg) {
-  const points = rows.map(row => {
+  let points = rows.map(row => {
     const xKey = cfg.x;
     const yKey = cfg.y;
     const x = Number(resolveValue(row, xKey));
@@ -1474,6 +1474,7 @@ function numericPairs(rows, cfg) {
     if (cfg.perArea) y /= Number(cfg.areaCm2);
     return { x, y };
   }).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+  points = extendPlotStartToXMinimum(points, cfg);
   if (!cfg.filterBelowMin || points.length < 2) {
     return points.filter(p => pointMeetsPlotMinimums(p, cfg));
   }
@@ -1486,6 +1487,29 @@ function numericPairs(rows, cfg) {
     appendUniquePlotPoint(clipped, segment[1]);
   }
   return clipped;
+}
+
+function extendPlotStartToXMinimum(points, cfg) {
+  if (!cfg.extendToXMin || cfg.xMin === undefined || points.length < 2) return points;
+  const xMinimum = Number(cfg.xMin);
+  const first = points[0];
+  const second = points[1];
+  if (!Number.isFinite(xMinimum) || first.x <= xMinimum + 1e-12 || second.x <= first.x + 1e-12) {
+    return points;
+  }
+
+  const configuredY = Number(cfg.yAtXMin);
+  let yAtMinimum;
+  if (cfg.yAtXMin !== undefined && Number.isFinite(configuredY)) {
+    yAtMinimum = configuredY;
+  } else {
+    const slope = (second.y - first.y) / (second.x - first.x);
+    yAtMinimum = first.y + slope * (xMinimum - first.x);
+  }
+  if (cfg.yMin !== undefined && Number.isFinite(Number(cfg.yMin))) {
+    yAtMinimum = Math.max(Number(cfg.yMin), yAtMinimum);
+  }
+  return [{ x: xMinimum, y: yAtMinimum }, ...points];
 }
 
 function pointMeetsPlotMinimums(point, cfg) {

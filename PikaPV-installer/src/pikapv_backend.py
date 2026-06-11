@@ -31,6 +31,11 @@ try:
     import pyvisa  # type: ignore
 except Exception:  # pragma: no cover
     pyvisa = None
+else:
+    try:
+        import pyvisa_py  # type: ignore
+    except Exception:
+        pyvisa_py = None
 
 
 # ============================================================================
@@ -623,7 +628,18 @@ class VisaController:
         else:
             if pyvisa is None:
                 raise RuntimeError("pyvisa is not installed. Install it or use Simulation mode.")
-            self.rm = pyvisa.ResourceManager()
+            try:
+                self.rm = pyvisa.ResourceManager()
+            except Exception as exc:
+                self.log("Default VISA backend failed; trying pyvisa-py backend '@py'.")
+                try:
+                    self.rm = pyvisa.ResourceManager("@py")
+                except Exception:
+                    raise RuntimeError(
+                        "Could not locate a VISA implementation. "
+                        "Install either a system VISA library or pyvisa-py. "
+                        "If you already installed pyvisa-py, check that it is available in the same Python environment."
+                    ) from exc
             try:
                 resources = self.rm.list_resources()
                 self.log(f"Available VISA resources: {resources}")

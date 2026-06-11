@@ -172,8 +172,8 @@ MODE_TO_SELECTION = {
 
 DEFAULT_PLOTS = {
     "standard_dc": [
-        {"id": "iv", "label": "I-V", "x": "Vdc_pv", "y": "Idc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
-        {"id": "pv", "label": "P-V", "x": "Vdc_pv", "y": "Pdc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
+        {"id": "iv", "label": "I-V", "x": "Vdc_pv", "y": "Idc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True, "extendToXMin": True},
+        {"id": "pv", "label": "P-V", "x": "Vdc_pv", "y": "Pdc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True, "extendToXMin": True, "yAtXMin": 0},
     ],
     "frequency_sweep": [
         {"id": "zreal_freq", "label": "Z_real over frequency", "x": "frequency", "y": "Z_real", "dataset": "frequency_sweep", "xScale": "log"},

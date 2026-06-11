@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import traceback
@@ -200,8 +201,8 @@ MODE_TO_SELECTION = {
 
 DEFAULT_PLOTS = {
     "standard_dc": [
-        {"id": "iv", "label": "I-V", "x": "Vdc_pv", "y": "Idc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
-        {"id": "pv", "label": "P-V", "x": "Vdc_pv", "y": "Pdc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True},
+        {"id": "iv", "label": "I-V", "x": "Vdc_pv", "y": "Idc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True, "extendToXMin": True},
+        {"id": "pv", "label": "P-V", "x": "Vdc_pv", "y": "Pdc_pv", "dataset": "iv_pv_sweep", "xMin": 0, "yMin": 0, "filterBelowMin": True, "extendToXMin": True, "yAtXMin": 0},
     ],
     "frequency_sweep": [
         {"id": "zreal_freq", "label": "Z_real over frequency", "x": "frequency", "y": "Z_real", "dataset": "frequency_sweep", "xScale": "log"},
@@ -297,6 +298,56 @@ def terminal_log(message: str) -> None:
             LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
             with LOG_FILE.open("a", encoding="utf-8") as handle:
                 handle.write(f"{datetime.now().isoformat(timespec='seconds')} {line}\n")
+
+
+def open_terminal_window(log_path: Path) -> None:
+    if sys.platform == "win32":
+        return
+    if sys.stdout.isatty():
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if not log_path.exists():
+        log_path.write_text("", encoding="utf-8")
+
+    tail_cmd = f'tail -F "{log_path}"; echo "Press Ctrl+C to close this window."; exec $SHELL'
+
+    if sys.platform == "darwin":
+        apple_script = (
+            'tell application "Terminal" to do script '
+            f'"{tail_cmd}"'
+        )
+        try:
+            subprocess.Popen(["osascript", "-e", apple_script])
+            terminal_log("Opened macOS Terminal window for runtime logs.")
+            return
+        except Exception:
+            pass
+
+    terminal_candidates = [
+        ("gnome-terminal", ["gnome-terminal", "--", "bash", "-lc", tail_cmd]),
+        ("konsole", ["konsole", "--noclose", "-e", "bash", "-lc", tail_cmd]),
+        ("xfce4-terminal", ["xfce4-terminal", "--hold", "-e", "bash", "-lc", tail_cmd]),
+        ("xterm", ["xterm", "-hold", "-e", "bash", "-lc", tail_cmd]),
+        ("lxterminal", ["lxterminal", "-e", "bash", "-lc", tail_cmd]),
+        ("mate-terminal", ["mate-terminal", "--", "bash", "-lc", tail_cmd]),
+        ("tilix", ["tilix", "-e", "bash", "-lc", tail_cmd]),
+        ("kitty", ["kitty", "bash", "-lc", tail_cmd]),
+    ]
+
+    for exe, cmd in terminal_candidates:
+        if shutil.which(exe) is None:
+            continue
+        try:
+            subprocess.Popen(cmd)
+            terminal_log(f"Opened terminal window with {exe} for runtime logs.")
+            return
+        except Exception:
+            continue
+
+    terminal_log(
+        "Could not open a native terminal window. "
+        "Runtime logs are still written to the application log file."
+    )
 
 
 def configure_led_generator(settings: Any, source: str, raise_errors: bool = True) -> bool:
@@ -1395,6 +1446,7 @@ if __name__ == "__main__":
     terminal_log(f"Resources: {RESOURCE_DIR}")
     terminal_log(f"User data: {BASE_DIR}")
     terminal_log(f"Working directory: {Path.cwd()}")
+    open_terminal_window(LOG_FILE)
     configure_led_generator(settings_with_config_defaults(), "Startup", raise_errors=False)
     terminal_log(f"Opening browser automatically: {browser_url}")
     threading.Timer(1.0, open_browser).start()

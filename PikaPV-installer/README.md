@@ -14,7 +14,8 @@ Python, Flask, Waitress, PyVISA, templates, and static assets are bundled.
 
 PyVISA is bundled, but the operating-system-specific VISA library and
 GPIB-to-USB driver are not. Install compatible drivers separately on every
-measurement computer.
+measurement computer. On macOS/Linux, the app can also fall back to a Python-based
+backend when `pyvisa-py` is installed in the same environment.
 
 - Windows commonly uses NI-VISA or Keysight IO Libraries.
 - Linux requires a supported VISA backend and may require device permissions or
@@ -80,6 +81,16 @@ python web_app.py
 
 Running from source stores settings and measurement output inside `src`. PikaPV
 opens at `http://127.0.0.1:5000`.
+
+Terminal output appears in the console that started the program. On macOS and
+Linux, if the application is launched from a desktop icon or GUI without an
+attached terminal, PikaPV now attempts to open a native terminal window and tail
+`logs/pikapv.log` for runtime messages.
+
+Packaged builds also write log messages to `logs/pikapv.log` under the app data
+directory (`%LOCALAPPDATA%/CAQM/PikaPV` on Windows,
+`~/Library/Application Support/CAQM/PikaPV` on macOS, or
+`$XDG_DATA_HOME/CAQM/PikaPV` on Linux).
 
 PikaPV configures the LED generator during startup. For development without
 instruments, set `simulation_mode: true` in `src/default_settings.yaml` before
