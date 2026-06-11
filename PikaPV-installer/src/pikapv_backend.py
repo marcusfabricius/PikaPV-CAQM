@@ -634,12 +634,18 @@ class VisaController:
                 self.log("Default VISA backend failed; trying pyvisa-py backend '@py'.")
                 try:
                     self.rm = pyvisa.ResourceManager("@py")
-                except Exception:
-                    raise RuntimeError(
-                        "Could not locate a VISA implementation. "
-                        "Install either a system VISA library or pyvisa-py. "
-                        "If you already installed pyvisa-py, check that it is available in the same Python environment."
-                    ) from exc
+                except Exception as inner_exc:
+                    message = (
+                        "Could not locate a VISA implementation or GPIB backend. "
+                        "Install either a system VISA library or pyvisa-py plus gpib-ctypes. "
+                        "On Linux, linux-gpib may also be required for physical GPIB adapters."
+                    )
+                    if "linux-gpib or gpib-ctypes" in str(inner_exc):
+                        message = (
+                            "GPIB support is missing. Install gpib-ctypes or linux-gpib, "
+                            "then restart the application."
+                        )
+                    raise RuntimeError(message) from exc
             try:
                 resources = self.rm.list_resources()
                 self.log(f"Available VISA resources: {resources}")

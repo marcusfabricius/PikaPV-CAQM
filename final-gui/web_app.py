@@ -141,9 +141,9 @@ SPEED_PROFILE_KEY_ALIASES = {
 
 
 def load_measurement_backend():
-    spec = importlib.util.spec_from_file_location("pikapv_backend", BASE_DIR / "gui-v1.py")
+    spec = importlib.util.spec_from_file_location("pikapv_backend", BASE_DIR / "pikapv-backend.py")
     if spec is None or spec.loader is None:
-        raise RuntimeError("Could not load gui-v1.py measurement backend.")
+        raise RuntimeError("Could not load pikapv-backend.py measurement backend.")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
