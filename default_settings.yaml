@@ -1,96 +1,146 @@
-# Default values for the web app Advanced settings.
-# Edit this file, then restart `python web_app.py` for changes to apply.
+# Startup defaults for PikaPV measurements and instruments.
+# Edit this file, then restart PikaPV for changes to apply.
 
+# PikaPV measurement settings.
 advanced_settings:
-  # Web-only default
+  # Selects the active profile from speedprofile_settings.yaml.
   test_speed: Medium
+  # Selects SMU voltages that create evenly spaced Vdc_pv points.
   auto_smu_step_by_speed: true
 
-  # VISA addresses
+  # GPIB address of the Digital Multimeter (DMM) that measures Vdc_pv.
   dmm_addr: 10
+  # GPIB address of the current lock-in amplifier used for Iac and ADC1 Idc readings.
   lockin_i_addr: 15
+  # GPIB address of the voltage lock-in amplifier used for Vac readings.
   lockin_v_addr: 12
+  # GPIB address of the AC perturbation function generator.
   fg_addr: 14
+  # GPIB address of the LED modulation function generator.
   led_fg_addr: 11
+  # GPIB address of the SMU that controls the DC operating point.
   smu_addr: 26
 
-  # Output and simulation
+  # Directory used for measurement CSV files.
   output_dir: measurement_output
+  # Uses simulated instruments instead of connected laboratory instruments.
   simulation_mode: false
 
-  # SMU and DC sweep
-  # Always enabled by the web GUI; every non-live measurement calibrates first.
+  # Forced on by the web GUI so every non-live measurement calibrates the solar-cell SMU range first.
   auto_smu_range: true
+  # Lower SMU search boundary used by automatic calibration.
   smu_start_v: 5.0
+  # Upper SMU search boundary and idle SMU voltage after a run.
   smu_stop_v: 15.0
+  # Fixed DC/MPP sweep step used only when automatic SMU stepping is disabled.
   smu_step_v: 0.1
+  # Fixed Complete AC/CV sweep step used only when automatic SMU stepping is disabled.
   cv_smu_step_v: 0.5
+  # Hard limit for every requested SMU voltage.
   max_smu_v: 15.0
-  target_vpv_v: 1.0
+  # Target Vdc_pv used by sweep logic configured to stop at a target PV voltage.
+  target_vpv_v: 2.0
+  # Calibration threshold that defines when Vdc_pv has become positive.
   vdc_positive_threshold_v: 0.0001
+  # Maximum permitted measured Vdc_pv when the corresponding safety stop is enabled.
   max_vdc_pv_v: 2.0
+  # Safety-limits toggle that enables stopping when Vdc_pv exceeds max_vdc_pv_v.
   stop_if_vdc_exceeds_max: false
+  # Enables normal sweep completion when Idc_pv crosses the negative-current endpoint.
   stop_if_idc_negative: true
+  # Threshold defining a negative-current endpoint.
   negative_idc_limit_a: -0.000001
+  # Safety-limits toggle that enables stopping when absolute Idc_pv exceeds max_idc_abs_a.
   stop_if_idc_abs_exceeds_max: true
+  # Maximum permitted absolute measured Idc_pv.
   max_idc_abs_a: 10.0
+  # Current-compliance limit programmed into the SMU.
   smu_current_limit_a: 0.5
+  # Conversion factor from the current lock-in ADC1 value to amperes.
   idc_adc1_to_ampere: 1.0
+  # Sign multiplier applied to ADC1 DC current according to the current-probe orientation.
   idc_measurement_sign: 1.0
 
-  # DC measurement quality
+  # Number of repeated DMM/ADC1 readings median-averaged for each DC point.
   dc_read_repeats: 3
+  # Relative sample spread that triggers an unstable-DC warning.
   dc_variation_warning_percent: 2.0
+  # Minimum absolute Vdc sample range required before an unstable-DC warning can trigger.
   dc_vdc_variation_warning_floor_v: 0.005
+  # Minimum absolute Idc sample range required before an unstable-DC warning can trigger.
   dc_idc_variation_warning_floor_a: 0.02
 
-  # Frequency sweep operating point
+  # Default operating-point method for a Standard Frequency Sweep.
   operating_point_mode: MPP_SEARCH
+  # SMU voltage used for a manual frequency-sweep operating point and as the initial live-view voltage.
   manual_smu_voltage_v: 12.5
+  # Minimum Vdc_pv accepted as an MPP-search candidate.
   min_mpp_vdc_pv_v: 0.0
+  # Minimum Idc_pv accepted as an MPP-search candidate.
   min_mpp_idc_pv_a: 0.0
 
-  # Function generator and impedance sweep
+  # AC perturbation amplitude programmed into the AC function generator.
   vac_vpp: 0.010
+  # DC offset programmed into the AC function generator.
   fg_offset_v: 0.0
+  # Waveform programmed into the AC function generator.
   fg_waveform: SIN
+  # Default lower frequency boundary.
   freq_start_hz: 40.0
+  # Default upper frequency boundary.
   freq_stop_hz: 10000.0
+  # Minimum usable measured Iac magnitude for impedance calculations.
   min_iac_mag_a: 0.000000000001
 
-  # LED modulation function generator
+  # LED pulse duty cycle sent to the LED function generator.
   led_duty_cycle_percent: 99.0
 
-  # Outlier handling
+  # Enables retrying frequency points whose Z_real exceeds max_abs_z_real_ohm.
   remeasure_z_real_outliers: true
+  # Absolute Z_real threshold used by the optional impedance outlier retry.
   max_abs_z_real_ohm: 100.0
+  # Minimum Vdc_pv above which the Z_real outlier threshold is applied.
   z_real_outlier_min_vdc_pv_v: 0.05
+  # Number of extra attempts allowed for rejected or unstable impedance points.
   max_outlier_retries: 8
+  # Additional wait between impedance-point retry attempts.
   outlier_retry_wait_s: 1.0
+  # Determines whether exhausted impedance retries stop the run or retain the final marked point.
   abort_if_outlier_retries_exhausted: false
 
-  # Phasor sign handling
+  # Sign multiplier applied to measured Iac according to the current-probe orientation.
   iac_measurement_sign: 1.0
+  # Optional 180-degree correction applied to the current phasor.
   invert_current_phasor: false
+  # Optional 180-degree correction applied to the voltage phasor.
   invert_voltage_phasor: false
 
-  # Lock-in configuration and read commands
+  # Controls whether PikaPV sends the configured input-mode and sensitivity commands to both lock-ins.
   configure_lockins: true
+  # Sensitivity command sent to both lock-in amplifiers during configuration.
   lockin_sensitivity_cmd: SEN 21
+  # Instrument command used to read current-lock-in AC magnitude.
   iac_mag_cmd: MAG.
+  # Instrument command used to read current-lock-in phase.
   iac_phase_cmd: PHA.
+  # Instrument command used to read DC current from current-lock-in ADC1.
   idc_adc1_cmd: ADC. 1
+  # Instrument command used to read voltage-lock-in AC magnitude.
   vac_mag_cmd: MAG.
+  # Instrument command used to read voltage-lock-in phase.
   vac_phase_cmd: PHA.
 
-  # Live lock-in monitor
+  # Delay between samples in the Live Lock-In Data view.
   ab_sample_interval_s: 0.2
+  # Maximum number of recent live samples retained for the scrolling live plots.
   ab_plot_window_points: 300
 
-  # Plotting
+  # Display unit used when PikaPV formats capacitance values.
   capacitance_unit: uF
+  # Independent sign multiplier used only for the displayed Nyquist Y-axis.
   nyquist_y_axis_sign: -1.0
 
-  # Intentional lab behavior: outputs stay on after runs.
+  # Controls whether the SMU output is turned off after a run.
   turn_off_smu_at_end: false
+  # Controls whether the AC function-generator output is turned off after a run.
   turn_off_fg_at_end: false
