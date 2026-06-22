@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PikaPV</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ app_started_at }}">
 </head>
 <body>
   <main class="shell">
@@ -185,6 +185,6 @@
     window.APP_STARTED_AT = {{ app_started_at | tojson }};
     window.PIKACHU_GIF_SRC = {{ url_for('static', filename='pikachu.gif') | tojson }};
   </script>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v={{ app_started_at }}"></script>
 </body>
 </html>
