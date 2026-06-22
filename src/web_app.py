@@ -6,6 +6,7 @@ import logging
 import math
 import sys
 import threading
+import time
 import traceback
 import webbrowser
 from dataclasses import asdict, fields
@@ -32,6 +33,21 @@ ESTIMATE_PER_VOLTAGE_OVERHEAD_S = 0.10
 ESTIMATE_AUTO_SMU_SEARCH_READS_PER_POINT = 4
 ESTIMATE_AUTO_SMU_SEARCH_READ_S = 0.15
 ESTIMATE_EXTRA_DC_SAMPLE_S = 0.10
+SIMULATION_SLOW_DURATION_S = 9 * 60
+
+SIMULATION_TEMPLATE_FILES = {
+    "standard_dc": APP_DIR / "measurement_output" / "combined_standard_dc_20260605_094705.csv",
+    "frequency_sweep": APP_DIR / "measurement_output" / "combined_frequency_sweep_20260609_160153.csv",
+    "complete_ac": APP_DIR / "measurement_output" / "combined_complete_ac_20260610_124554.csv",
+}
+SIMULATION_COMBINED_FIELDS = {"run_mode", "speed_level", "run_timestamp", "dataset_name"}
+SIMULATION_DATASET_FILE_PREFIXES = {
+    "iv_pv_sweep": "iv_pv_sweep",
+    "frequency_dc": "frequency_dc_operating_point",
+    "frequency_sweep": "frequency_impedance_sweep",
+    "cv_curve": "cv_curve",
+    "cv_frequency_sweeps": "cv_frequency_sweeps",
+}
 
 SPEED_PROFILE_ORDER = ["Custom", "Fast", "Medium", "Slow"]
 SPEED_PROFILE_KIND_ORDER = ["frequency_sweep", "cv_curve"]
@@ -894,6 +910,157 @@ def json_safe(value: Any) -> Any:
     return serialize_summary(value)
 
 
+def simulation_duration_s(speed: str) -> float:
+    return SIMULATION_SLOW_DURATION_S if str(speed).lower() == "slow" else 0.0
+
+
+def simulation_progress(payload: Dict[str, Any], settings: Any) -> Dict[str, Any]:
+    mode = payload.get("mode", "standard_dc")
+    speed = str(payload.get("speed") or "Medium")
+    duration_s = simulation_duration_s(speed)
+    return {
+        "mode": mode,
+        "label": f"simulated {mode.replace('_', ' ')}",
+        "estimated_total_s": max(1.0, duration_s),
+        "estimated_voltage_points": 0,
+        "estimated_frequency_points": count_freq_points(settings, speed) if mode in {"frequency_sweep", "complete_ac"} else 0,
+        "estimated_ac_samples_per_frequency": getattr(settings, "ac_samples_per_frequency", 0) if mode in {"frequency_sweep", "complete_ac"} else 0,
+        "estimated_overhead_s": 0.0,
+        "auto_smu_step_cached_points": 0,
+        "auto_smu_step_missing_points": 0,
+        "auto_smu_step_search_overhead_s": 0.0,
+        "base_percent": 0.0,
+        "end_percent": 100.0,
+        "percent": 0.0,
+        "elapsed_s": 0.0,
+        "remaining_s": max(1.0, duration_s),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "message": "Simulation mode is using reference data instead of laboratory instruments.",
+    }
+
+
+def wait_for_simulation_delay(speed: str, stop_event: threading.Event) -> None:
+    duration_s = simulation_duration_s(speed)
+    if duration_s <= 0:
+        return
+    deadline = time.monotonic() + duration_s
+    while True:
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            return
+        if stop_event.wait(min(1.0, remaining_s)):
+            raise backend.UserStop("Simulation stopped by user.")
+
+
+def default_dataset_name_for_mode(mode: str) -> str:
+    if mode == "standard_dc":
+        return "iv_pv_sweep"
+    if mode == "complete_ac":
+        return "cv_curve"
+    if mode == "frequency_sweep":
+        return "frequency_sweep"
+    return mode
+
+
+def load_simulation_template_datasets(mode: str, speed: str) -> Dict[str, List[Dict[str, Any]]]:
+    template_path = SIMULATION_TEMPLATE_FILES.get(mode)
+    if template_path is None:
+        raise ValueError(f"Simulation mode is not available for {mode}.")
+    if not template_path.exists():
+        raise FileNotFoundError(f"Simulation template CSV is missing: {template_path}")
+
+    with template_path.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise ValueError(f"Simulation template CSV has no rows: {template_path}")
+
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    datasets: Dict[str, List[Dict[str, Any]]] = {}
+    fallback_dataset = default_dataset_name_for_mode(mode)
+    for source_row in rows:
+        dataset_name = str(source_row.get("dataset_name") or fallback_dataset).strip() or fallback_dataset
+        row = {
+            key: value
+            for key, value in source_row.items()
+            if key not in SIMULATION_COMBINED_FIELDS
+        }
+        if "timestamp" in row:
+            row["timestamp"] = timestamp
+        datasets.setdefault(dataset_name, []).append(row)
+    return datasets
+
+
+def resolved_output_dir(output_dir: Path) -> Path:
+    return output_dir if output_dir.is_absolute() else APP_DIR / output_dir
+
+
+def save_simulation_dataset_csvs(datasets: Dict[str, List[Dict[str, Any]]], output_dir: Path) -> List[Path]:
+    target_dir = resolved_output_dir(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    files: List[Path] = []
+    for dataset_name, rows in datasets.items():
+        if not rows:
+            continue
+        prefix = SIMULATION_DATASET_FILE_PREFIXES.get(dataset_name, dataset_name)
+        path = target_dir / f"{prefix}_{timestamp}.csv"
+        backend.save_rows(rows, path)
+        files.append(path.resolve())
+    return files
+
+
+def first_safe_float(row: Dict[str, Any], keys: List[str]) -> Optional[float]:
+    for key in keys:
+        value = safe_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def max_power_row(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = [
+        row
+        for row in rows
+        if first_safe_float(row, ["Pdc_pv_W", "Pdc_pv", "Power"]) is not None
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: first_safe_float(row, ["Pdc_pv_W", "Pdc_pv", "Power"]) or float("-inf"),
+    )
+
+
+def simulation_summary(mode: str, speed: str, datasets: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "simulation_mode": True,
+        "simulation_speed_level": speed,
+    }
+    if mode == "standard_dc":
+        mpp_row = max_power_row(datasets.get("iv_pv_sweep", []))
+        if mpp_row:
+            summary["mpp_row"] = mpp_row
+    elif mode == "frequency_sweep":
+        rows = datasets.get("frequency_sweep", [])
+        if rows:
+            summary["operating_point"] = rows[0]
+        summary["frequency_speed_level"] = speed
+    elif mode == "complete_ac":
+        summary["cv_speed_level"] = speed
+    return summary
+
+
+def run_simulated_measurement(mode: str, speed: str, settings: Any, stop_event: threading.Event) -> Any:
+    wait_for_simulation_delay(speed, stop_event)
+    datasets = load_simulation_template_datasets(mode, speed)
+    files = save_simulation_dataset_csvs(datasets, settings.output_dir)
+    return backend.RunResult(
+        datasets=datasets,
+        output_files=files,
+        summary=simulation_summary(mode, speed, datasets),
+    )
+
+
 def save_combined_csv(mode: str, speed: str, datasets: Dict[str, List[Dict[str, Any]]], output_dir: Path) -> Path:
     rows: List[Dict[str, Any]] = []
     run_timestamp = datetime.now().isoformat(timespec="seconds")
@@ -1025,7 +1192,7 @@ def run_measurement(payload: Dict[str, Any]) -> None:
             return dict(STATE.live_control)
 
     try:
-        requires_smu_calibration = mode != "live_lockin"
+        requires_smu_calibration = mode != "live_lockin" and not settings.simulation_mode
         if requires_smu_calibration:
             terminal_log("Calibrating the solar-cell SMU range before measurement...")
             with STATE.lock:
@@ -1046,9 +1213,17 @@ def run_measurement(payload: Dict[str, Any]) -> None:
 
         with STATE.lock:
             STATE.mode = mode
-        terminal_log(f"Starting {mode} measurement with {speed} speed.")
-        engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback, live_control_getter)
-        result = engine.run_selected(selected, speed)
+        if settings.simulation_mode and mode != "live_lockin":
+            duration_s = simulation_duration_s(speed)
+            if duration_s > 0:
+                terminal_log(f"Starting simulated {mode} measurement with {speed} speed. It will take 9 minutes.")
+            else:
+                terminal_log(f"Starting instant simulated {mode} measurement with {speed} speed.")
+            result = run_simulated_measurement(mode, speed, settings, STATE.stop_event)
+        else:
+            terminal_log(f"Starting {mode} measurement with {speed} speed.")
+            engine = backend.MeasurementEngine(settings, terminal_log, STATE.stop_event, live_callback, live_control_getter)
+            result = engine.run_selected(selected, speed)
         combined = save_combined_csv(mode, speed, result.datasets, settings.output_dir)
         with STATE.lock:
             STATE.status = "completed"
@@ -1140,7 +1315,7 @@ def start():
     with STATE.lock:
         if STATE.status == "running":
             return jsonify({"ok": False, "error": "A measurement is already running."}), 409
-        needs_calibration = mode != "live_lockin"
+        needs_calibration = mode != "live_lockin" and not settings.simulation_mode
         STATE.status = "running"
         STATE.mode = mode
         STATE.speed = speed
@@ -1157,7 +1332,10 @@ def start():
             "freq_start_hz": settings.freq_start_hz,
             "freq_stop_hz": settings.freq_stop_hz,
         }
-        STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings)
+        if settings.simulation_mode and mode != "live_lockin":
+            STATE.progress = simulation_progress(payload, settings)
+        else:
+            STATE.progress = calibration_progress(0.0, 10.0) if needs_calibration else estimate_measurement_progress(payload, settings)
         STATE.live_control = {
             "smu_voltage_v": settings.manual_smu_voltage_v,
             "fg_frequency_hz": settings.freq_start_hz,

@@ -105,6 +105,7 @@ const advancedFieldLabels = {
   settling_after_smu_s: "Settling SMU change time [s]",
   settling_after_freq_s: "Settling FG change time [s]",
   lockin_time_constant_wait_s: "Lockin Time wait [s]",
+  simulation_mode: "Simulation mode",
   z_real_outlier_min_vdc_pv_v: "Z' retry minimum Vdc_pv [V]",
   stop_if_idc_negative: "End measurement when Idc becomes negative",
   dc_read_repeats: "DC samples per reading",
@@ -661,7 +662,7 @@ function openInfo(key) {
 
 function buildAdvanced() {
   const sections = [
-    ["Measurement speed mode", ["test_speed", "auto_smu_step_by_speed"]],
+    ["Measurement speed mode", ["test_speed", "simulation_mode", "auto_smu_step_by_speed"]],
     ["LED settings", ["led_duty_cycle_percent"]],
     ["Custom frequency sweep", ["custom_frequency_sweep_vdc_pv_step_size_v", "custom_frequency_sweep_frequency_points_per_decade", "custom_frequency_sweep_minimum_frequency_points", "custom_frequency_sweep_settling_after_smu_s", "custom_frequency_sweep_settling_after_freq_s", "custom_frequency_sweep_lockin_time_constant_wait_s", "custom_frequency_sweep_ac_samples_per_frequency", "custom_frequency_sweep_ac_max_impedance_spread_percent", "custom_frequency_sweep_ac_sample_interval_s"]],
     ["Custom CV curve", ["custom_cv_vdc_pv_step_size_v", "custom_cv_frequency_points_per_decade", "custom_cv_minimum_frequency_points", "custom_cv_settling_after_smu_s", "custom_cv_settling_after_freq_s", "custom_cv_lockin_time_constant_wait_s", "custom_cv_ac_samples_per_frequency", "custom_cv_ac_max_impedance_spread_percent", "custom_cv_ac_sample_interval_s"]],
@@ -784,7 +785,7 @@ function renderAdvancedField(key) {
     const displayValue = isGpibAddressKey(key) ? shortGpibAddress(value) : value;
     const inputType = isGpibAddressKey(key) ? "number" : type;
     const label = advancedFieldLabels[key] || key.replaceAll("_", " ");
-    const disabled = key === "simulation_mode" || key === "auto_smu_range";
+    const disabled = key === "auto_smu_range";
     return `<label class="${disabled ? "disabled-field" : ""}">${label}<input data-advanced="${key}" type="${inputType}" value="${displayValue}" ${checked} ${disabled ? "disabled" : ""}></label>`;
 }
 
